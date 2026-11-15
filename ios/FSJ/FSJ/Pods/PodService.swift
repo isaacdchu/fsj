@@ -43,11 +43,13 @@ nonisolated struct PodCapture: Sendable {
 nonisolated enum PodServiceError: LocalizedError, Sendable {
     case notConnected
     case bluetoothUnavailable
+    case podDidNotRespond(PodSide)
 
     var errorDescription: String? {
         switch self {
         case .notConnected: "Both pods need to be connected."
         case .bluetoothUnavailable: "Bluetooth is off or not allowed for this app."
+        case .podDidNotRespond(let side): "The \(side.name.lowercased()) did not respond."
         }
     }
 }

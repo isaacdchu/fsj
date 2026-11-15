@@ -5,14 +5,23 @@ import Foundation
 // All multi-byte fields are little-endian.
 
 nonisolated enum FSJProtocol {
-    static let version: UInt8 = 1
+    static let version: UInt8 = 2
 
     static let serviceUUID = "3c820001-3646-49c3-9e01-da24fa4a5faa"
     static let dataUUID = "3c820002-3646-49c3-9e01-da24fa4a5faa"
     static let infoUUID = "3c820003-3646-49c3-9e01-da24fa4a5faa"
+    static let controlUUID = "3c820004-3646-49c3-9e01-da24fa4a5faa"
 
     static let sampleRateHz: Double = 100
     static let samplesPerPacket = 10
+}
+
+/// Written to the control characteristic (one byte). The pod samples and
+/// streams only between `start` and `stop`, and stops by itself if the
+/// phone disconnects.
+nonisolated enum PodCommand: UInt8, Sendable {
+    case stop = 0x00
+    case start = 0x01
 }
 
 /// One IMU reading.

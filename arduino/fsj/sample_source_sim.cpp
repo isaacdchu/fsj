@@ -58,8 +58,13 @@ void enter(Phase p) {
 
 void sampleSourceBegin() {
     randomSeed(analogRead(A0) ^ micros());
+}
+
+void sampleSourceStart() {
     enter(Phase::Glide);
 }
+
+void sampleSourceStop() {}
 
 void sampleSourceRead(ImuSample& s) {
     switch (phase) {

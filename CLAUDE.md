@@ -15,7 +15,7 @@ Design constraints that follow from this:
 
 Firmware lives in `arduino/fsj/`:
 - `protocol.h`: the BLE contract with the iOS app (UUIDs, `DataPacket`/`InfoPacket` byte layouts, sample rate). Keep the iOS parser in sync with it, and bump `FSJ_PROTOCOL_VERSION` when the layout changes.
-- `fsj.ino`: the Bluefruit peripheral. It advertises as `FSJ-L` or `FSJ-R` and only samples while a central is subscribed. Each 126-byte packet is one notification. Bluefruit splits anything larger than MTU−3 into several notifications, so the firmware waits until the MTU is at least 129 before streaming. It also runs the standard Battery and Device Information services.
+- `fsj.ino`: the Bluefruit peripheral. It advertises as `FSJ-L` or `FSJ-R`. The phone subscribes to the data characteristic on connect, then writes 1 (start) or 0 (stop) to the control characteristic; the board only samples between the two and stops by itself on disconnect. Each 126-byte packet is one notification. Bluefruit splits anything larger than MTU−3 into several notifications, so the firmware waits until the MTU is at least 129 before streaming. It also runs the standard Battery and Device Information services.
 - `sample_source.h`: the data-source interface. `sample_source_sim.cpp` makes up jumps and prints the true airtime over serial. A real LSM6DS3 implementation will replace it on the Sense board.
 - There's no iOS app in the repo yet.
 

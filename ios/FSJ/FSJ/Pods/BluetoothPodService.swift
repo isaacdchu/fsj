@@ -5,21 +5,24 @@ import Observation
 /// Talks to the real pods over Bluetooth LE, following
 /// arduino/fsj/protocol.h.
 ///
-/// The current firmware streams while a central is subscribed to the data
-/// characteristic, so Start subscribes on both pods and Stop unsubscribes.
-/// When the firmware gets explicit start/stop commands, only
-/// `startStreaming` / `stopStreaming` here need to change.
+/// On connect the app subscribes to each pod's data characteristic and keeps
+/// that subscription. Start writes `PodCommand.start` to both pods' control
+/// characteristic, which makes them power the IMU and stream; Stop writes
+/// `PodCommand.stop`. Writes use responses, so Start only returns once both
+/// pods have acknowledged it.
 @Observable
 final class BluetoothPodService: NSObject, PodService {
     private static let serviceUUID = CBUUID(string: FSJProtocol.serviceUUID)
     private static let dataUUID = CBUUID(string: FSJProtocol.dataUUID)
     private static let infoUUID = CBUUID(string: FSJProtocol.infoUUID)
+    private static let controlUUID = CBUUID(string: FSJProtocol.controlUUID)
     private static let batteryServiceUUID = CBUUID(string: "180F")
     private static let batteryLevelUUID = CBUUID(string: "2A19")
 
     private static let connectTimeout: Duration = .seconds(15)
-    /// How long to keep taking packets after unsubscribing.
-    private static let drainTime: Duration = .milliseconds(200)
+    private static let commandTimeout: Duration = .seconds(2)
+    /// How long to keep taking packets after the pods acknowledge Stop.
+    private static let drainTime: Duration = .milliseconds(150)
 
     private var statuses: [PodSide: PodStatus] = [:]
 
@@ -28,6 +31,11 @@ final class BluetoothPodService: NSObject, PodService {
     @ObservationIgnored private var wanted: Set<PodSide> = []
     @ObservationIgnored private var peripherals: [PodSide: CBPeripheral] = [:]
     @ObservationIgnored private var dataCharacteristics: [PodSide: CBCharacteristic] = [:]
+    @ObservationIgnored private var controlCharacteristics: [PodSide: CBCharacteristic] = [:]
+    /// Sides whose data characteristic is confirmed subscribed.
+    @ObservationIgnored private var subscribed: Set<PodSide> = []
+    @ObservationIgnored private var pendingWrites: [PodSide: PendingWrite] = [:]
+    @ObservationIgnored private var nextWriteID = 0
     @ObservationIgnored private var timeouts: [PodSide: Task<Void, Never>] = [:]
     @ObservationIgnored private var collecting = false
     @ObservationIgnored private var buffers: [PodSide: [ImuSample]] = [:]
@@ -73,31 +81,76 @@ final class BluetoothPodService: NSObject, PodService {
 
     func startStreaming() async throws {
         guard central?.state == .poweredOn else { throw PodServiceError.bluetoothUnavailable }
-        guard bothConnected, PodSide.allCases.allSatisfy({ dataCharacteristics[$0] != nil }) else {
-            throw PodServiceError.notConnected
-        }
+        guard bothConnected else { throw PodServiceError.notConnected }
         buffers = [:]
         lastSeq = [:]
         droppedPackets = 0
         collecting = true
-        for side in PodSide.allCases {
-            if let p = peripherals[side], let c = dataCharacteristics[side] {
-                p.setNotifyValue(true, for: c)
+        do {
+            for side in PodSide.allCases {
+                try await send(.start, to: side)
             }
+        } catch {
+            collecting = false
+            for side in PodSide.allCases {
+                try? await send(.stop, to: side)
+            }
+            throw error
         }
     }
 
     func stopStreaming() async throws -> PodCapture {
         for side in PodSide.allCases {
-            if let p = peripherals[side], let c = dataCharacteristics[side] {
-                p.setNotifyValue(false, for: c)
+            do {
+                try await send(.stop, to: side)
+            } catch {
+                // The pod also stops by itself when the link drops.
+                print("BluetoothPodService: Stop not acknowledged by \(side.advertisedName): \(error)")
             }
         }
         try? await Task.sleep(for: Self.drainTime)
         collecting = false
         let capture = PodCapture(sampleRateHz: FSJProtocol.sampleRateHz, samples: buffers)
         buffers = [:]
+        if droppedPackets > 0 {
+            print("BluetoothPodService: \(droppedPackets) packets dropped during capture")
+        }
         return capture
+    }
+
+    // MARK: Commands
+
+    private struct PendingWrite {
+        var id: Int
+        var continuation: CheckedContinuation<Void, Error>
+    }
+
+    /// Write a command to one pod and wait for its acknowledgement.
+    private func send(_ command: PodCommand, to side: PodSide) async throws {
+        guard let peripheral = peripherals[side], let control = controlCharacteristics[side] else {
+            throw PodServiceError.notConnected
+        }
+        nextWriteID += 1
+        let id = nextWriteID
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            finishWrite(on: side, error: PodServiceError.podDidNotRespond(side))
+            pendingWrites[side] = PendingWrite(id: id, continuation: continuation)
+            peripheral.writeValue(Data([command.rawValue]), for: control, type: .withResponse)
+            Task { [weak self] in
+                try? await Task.sleep(for: Self.commandTimeout)
+                guard let self, self.pendingWrites[side]?.id == id else { return }
+                self.finishWrite(on: side, error: PodServiceError.podDidNotRespond(side))
+            }
+        }
+    }
+
+    private func finishWrite(on side: PodSide, error: Error?) {
+        guard let pending = pendingWrites.removeValue(forKey: side) else { return }
+        if let error {
+            pending.continuation.resume(throwing: error)
+        } else {
+            pending.continuation.resume()
+        }
     }
 
     // MARK: Internals
@@ -111,9 +164,21 @@ final class BluetoothPodService: NSObject, PodService {
     }
 
     private func forget(_ side: PodSide) {
+        finishWrite(on: side, error: PodServiceError.notConnected)
         peripherals[side] = nil
         dataCharacteristics[side] = nil
+        controlCharacteristics[side] = nil
+        subscribed.remove(side)
         statuses[side] = PodStatus()
+    }
+
+    /// Connected once the data subscription is confirmed and the control
+    /// characteristic is known.
+    private func markConnectedIfReady(_ side: PodSide) {
+        guard subscribed.contains(side), controlCharacteristics[side] != nil,
+              status(of: side).connection == .connecting else { return }
+        timeouts[side]?.cancel()
+        setConnection(.connected, for: side)
     }
 
     private func giveUp(on side: PodSide) {
@@ -169,8 +234,10 @@ final class BluetoothPodService: NSObject, PodService {
             switch c.uuid {
             case Self.dataUUID:
                 dataCharacteristics[side] = c
-                timeouts[side]?.cancel()
-                setConnection(.connected, for: side)
+                peripheral.setNotifyValue(true, for: c)
+            case Self.controlUUID:
+                controlCharacteristics[side] = c
+                markConnectedIfReady(side)
             case Self.infoUUID:
                 peripheral.readValue(for: c)
             case Self.batteryLevelUUID:
@@ -180,6 +247,25 @@ final class BluetoothPodService: NSObject, PodService {
                 break
             }
         }
+    }
+
+    private func notificationStateChanged(for uuid: CBUUID, on peripheral: CBPeripheral, isNotifying: Bool, error: Error?) {
+        guard uuid == Self.dataUUID, let side = side(of: peripheral) else { return }
+        if let error {
+            print("BluetoothPodService: could not subscribe to \(side.advertisedName): \(error)")
+            return
+        }
+        if isNotifying {
+            subscribed.insert(side)
+            markConnectedIfReady(side)
+        } else {
+            subscribed.remove(side)
+        }
+    }
+
+    private func wrote(_ uuid: CBUUID, on peripheral: CBPeripheral, error: Error?) {
+        guard uuid == Self.controlUUID, let side = side(of: peripheral) else { return }
+        finishWrite(on: side, error: error.map { _ in PodServiceError.podDidNotRespond(side) })
     }
 
     private func received(_ value: Data, from uuid: CBUUID, on peripheral: CBPeripheral) {
@@ -245,7 +331,7 @@ extension BluetoothPodService: CBPeripheralDelegate {
             for service in peripheral.services ?? [] {
                 switch service.uuid {
                 case Self.serviceUUID:
-                    peripheral.discoverCharacteristics([Self.dataUUID, Self.infoUUID], for: service)
+                    peripheral.discoverCharacteristics([Self.dataUUID, Self.infoUUID, Self.controlUUID], for: service)
                 case Self.batteryServiceUUID:
                     peripheral.discoverCharacteristics([Self.batteryLevelUUID], for: service)
                 default:
@@ -263,5 +349,18 @@ extension BluetoothPodService: CBPeripheralDelegate {
         guard error == nil, let value = characteristic.value else { return }
         let uuid = characteristic.uuid
         MainActor.assumeIsolated { self.received(value, from: uuid, on: peripheral) }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        let uuid = characteristic.uuid
+        let isNotifying = characteristic.isNotifying
+        MainActor.assumeIsolated {
+            self.notificationStateChanged(for: uuid, on: peripheral, isNotifying: isNotifying, error: error)
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        let uuid = characteristic.uuid
+        MainActor.assumeIsolated { self.wrote(uuid, on: peripheral, error: error) }
     }
 }

@@ -4,12 +4,19 @@
 
 #include <stdint.h>
 
-#define FSJ_PROTOCOL_VERSION 1
+#define FSJ_PROTOCOL_VERSION 2
 
 // 128-bit UUIDs (strings for the iOS side / nRF Connect):
 //   service  3c820001-3646-49c3-9e01-da24fa4a5faa
 //   data     3c820002-3646-49c3-9e01-da24fa4a5faa   notify, DataPacket
 //   info     3c820003-3646-49c3-9e01-da24fa4a5faa   read,   InfoPacket
+//   control  3c820004-3646-49c3-9e01-da24fa4a5faa   read + write (with response), 1 byte ControlCommand
+//
+// Session: the phone connects and subscribes to `data` once. Nothing is
+// sampled until it writes CMD_START to `control`; the board then powers the
+// IMU, restarts `seq` at 0 and streams until CMD_STOP or a disconnect.
+// Reading `control` returns the current state (CMD_START while streaming).
+//
 // Bluefruit wants the bytes in little-endian order; `id` is the 16-bit
 // field that differs between them.
 #define FSJ_UUID(id) \
@@ -19,6 +26,11 @@
 constexpr uint16_t SAMPLE_RATE_HZ = 100;
 constexpr uint8_t SAMPLES_PER_PACKET = 10;
 constexpr uint32_t SAMPLE_PERIOD_US = 1000000UL / SAMPLE_RATE_HZ;
+
+enum ControlCommand : uint8_t {
+    CMD_STOP = 0x00,
+    CMD_START = 0x01
+};
 
 enum SkateSide : uint8_t {
     SIDE_LEFT = 0,
