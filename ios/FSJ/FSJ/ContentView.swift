@@ -1,24 +1,34 @@
-//
-//  ContentView.swift
-//  FSJ
-//
-//  Created by Isaac Chu on 11/14/26.
-//
-
 import SwiftUI
 
+/// Three tabs: Record, Stats, Settings.
 struct ContentView: View {
+    @Environment(AppModel.self) private var model
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        @Bindable var model = model
+        TabView(selection: $model.tab) {
+            Tab("Record", systemImage: "record.circle", value: AppTab.record) {
+                RecordView()
+            }
+            Tab("Stats", systemImage: "chart.bar", value: AppTab.stats) {
+                StatsView()
+            }
+            Tab("Settings", systemImage: "slider.horizontal.3", value: AppTab.settings) {
+                SettingsView()
+            }
         }
-        .padding()
+        .tint(Palette.text)
     }
 }
 
-#Preview {
+#Preview("Light") {
     ContentView()
+        .environment(AppModel.preview())
+        .preferredColorScheme(.light)
+}
+
+#Preview("Dark") {
+    ContentView()
+        .environment(AppModel.preview())
+        .preferredColorScheme(.dark)
 }
