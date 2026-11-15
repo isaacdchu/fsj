@@ -1,5 +1,7 @@
 // FSJ skate firmware: BLE peripheral that streams IMU samples to the iPhone.
 // One board per skate. Same firmware on both; SKATE_SIDE picks the name.
+// The phone's Start/Stop buttons write CMD_START/CMD_STOP to the control
+// characteristic (see protocol.h); the board only samples in between.
 //   left:  arduino-cli compile ... (default)
 //   right: arduino-cli compile ... --build-property "compiler.cpp.extra_flags=-DSKATE_SIDE=1"
 
@@ -17,6 +19,7 @@ const char* const DEVICE_NAME = (SKATE_SIDE == SIDE_RIGHT) ? "FSJ-R" : "FSJ-L";
 const uint8_t SERVICE_UUID[16] = FSJ_UUID(0x01);
 const uint8_t DATA_UUID[16] = FSJ_UUID(0x02);
 const uint8_t INFO_UUID[16] = FSJ_UUID(0x03);
+const uint8_t CONTROL_UUID[16] = FSJ_UUID(0x04);
 
 constexpr uint32_t BATTERY_INTERVAL_MS = 30000;
 constexpr uint32_t STATS_INTERVAL_MS = 5000;
@@ -24,6 +27,7 @@ constexpr uint32_t STATS_INTERVAL_MS = 5000;
 BLEService fsjService(SERVICE_UUID);
 BLECharacteristic dataChar(DATA_UUID);
 BLECharacteristic infoChar(INFO_UUID);
+BLECharacteristic controlChar(CONTROL_UUID);
 BLEDis bledis;
 BLEBas blebas;
 
@@ -32,6 +36,9 @@ uint8_t fill = 0;
 uint16_t seq = 0;
 uint32_t nextSampleUs = 0;
 bool streaming = false;
+
+// Set from BLE callbacks (SoftDevice task), read in loop().
+volatile bool startRequested = false;  // last command from the phone was CMD_START
 
 uint32_t packetsSent = 0;
 uint32_t packetsDropped = 0;
@@ -74,7 +81,19 @@ void onConnect(uint16_t connHandle) {
 
 void onDisconnect(uint16_t connHandle, uint8_t reason) {
     (void)connHandle;
+    startRequested = false;  // never keep sampling with no phone listening
     Serial.printf("disconnected, reason 0x%02X\n", reason);
+}
+
+void onControlWrite(uint16_t connHandle, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
+    (void)connHandle;
+    (void)chr;
+    if (len < 1) return;
+    switch (data[0]) {
+        case CMD_START: startRequested = true;  break;
+        case CMD_STOP:  startRequested = false; break;
+        default: Serial.printf("unknown command 0x%02X\n", data[0]); break;
+    }
 }
 
 void startAdvertising() {
@@ -121,13 +140,21 @@ void setupBle() {
     infoChar.begin();
     infoChar.write(&info, sizeof(info));
 
+    controlChar.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE);
+    controlChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+    controlChar.setFixedLen(1);
+    controlChar.setWriteCallback(onControlWrite);
+    controlChar.begin();
+    controlChar.write8(CMD_STOP);
+
     startAdvertising();
 }
 
-// True once a central has subscribed and the MTU fits a whole packet.
-// Bluefruit splits anything larger than MTU-3 into several notifications,
-// which would break the one-packet-per-notification framing.
+// True once the phone has pressed Start, is subscribed, and the MTU fits a
+// whole packet. Bluefruit splits anything larger than MTU-3 into several
+// notifications, which would break the one-packet-per-notification framing.
 bool readyToStream() {
+    if (!startRequested) return false;
     if (!Bluefruit.connected() || !dataChar.notifyEnabled()) return false;
     BLEConnection* conn = Bluefruit.Connection(Bluefruit.connHandle());
     return conn && conn->getMtu() >= sizeof(DataPacket) + 3;
@@ -181,7 +208,14 @@ void loop() {
     if (ready != streaming) {
         streaming = ready;
         fill = 0;
-        nextSampleUs = micros();
+        if (streaming) {
+            seq = 0;
+            sampleSourceStart();
+            nextSampleUs = micros();
+        } else {
+            sampleSourceStop();  // a partly filled packet is dropped
+        }
+        controlChar.write8(streaming ? CMD_START : CMD_STOP);
         Serial.println(streaming ? "streaming started" : "streaming stopped");
     }
     if (!streaming) {

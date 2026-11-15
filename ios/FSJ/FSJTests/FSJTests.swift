@@ -71,8 +71,14 @@ struct PodProtocolTests {
         #expect(InfoPacket(Data(count: 4)) == nil)
     }
 
+    @Test func controlCommandsMatchFirmware() {
+        // CMD_STOP / CMD_START in arduino/fsj/protocol.h
+        #expect(PodCommand.stop.rawValue == 0x00)
+        #expect(PodCommand.start.rawValue == 0x01)
+    }
+
     @Test func infoPacket() throws {
-        let info = try #require(InfoPacket(Data([1, 1, 100, 0, 10])))
+        let info = try #require(InfoPacket(Data([2, 1, 100, 0, 10])))
         #expect(info.version == FSJProtocol.version)
         #expect(info.side == .right)
         #expect(info.sampleRateHz == 100)
