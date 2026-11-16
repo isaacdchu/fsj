@@ -8,10 +8,11 @@ Arduino IDE Boards Manager first.
 
 ### Flasher app
 
-`tools/flasher/flash_pods.py` is a small window with two buttons, Flash left
-and Flash right. Each one builds the firmware for that side (it passes
-`SKATE_SIDE` as a compiler flag, so `fsj.ino` is never edited) and uploads it to
-the plugged-in pod. If both pods are plugged in, it asks which port to use.
+`tools/flasher/flash_pods.py` is a small window with a board dropdown and two
+buttons, Flash left and Flash right. Pick the board first (press Refresh after
+plugging one in); the side buttons stay greyed out until you do. Each button
+builds the firmware for that side (it passes `SKATE_SIDE` as a compiler flag, so
+`fsj.ino` is never edited) and uploads it to the picked board.
 
 It needs the Seeeduino nRF52 core installed (steps 1 to 3 below) and
 `arduino-cli`, which it finds on `PATH` or inside Arduino IDE 2. It needs a
