@@ -199,7 +199,7 @@ struct JumpRow: View {
                 .font(.ui(14))
                 .foregroundStyle(Palette.muted)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text("\(Format.seconds(airtime)) s")
+            Text("\(Format.ms(airtime)) ms")
                 .font(.mono(16))
                 .monospacedDigit()
         }

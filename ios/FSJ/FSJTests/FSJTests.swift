@@ -142,3 +142,12 @@ struct JumpStoreTests {
         #expect(JumpStore(fileURL: url).jumps.isEmpty)
     }
 }
+
+@MainActor
+struct FormatTests {
+    @Test func airtimesShowInMilliseconds() {
+        #expect(Format.ms(0.534) == "534")
+        #expect(Format.ms(0.5) == "500")
+        #expect(Format.msTenths(0.0170782512765993) == "17.1")
+    }
+}
