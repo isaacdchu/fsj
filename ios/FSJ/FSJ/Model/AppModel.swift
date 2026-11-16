@@ -109,7 +109,7 @@ final class AppModel {
         guard case .review(let airtime) = phase else { return }
         store.add(code, airtime: airtime)
         phase = .idle
-        show(.saved, "Saved \(code), \(Format.seconds(airtime)) s")
+        show(.saved, "Saved \(code), \(Format.ms(airtime)) ms")
     }
 
     func discard() {

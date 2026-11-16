@@ -12,23 +12,24 @@ enum AppTheme: String, CaseIterable {
     }
 }
 
-/// Colors from the mockup: ice grey ground, ink, and rink red only while
-/// recording or for destructive actions. Each one follows the color scheme.
+/// Colors from the mockup: light grey ground, near-black ink, and one red
+/// accent (#C5050C) for recording and destructive actions. Each one follows
+/// the color scheme.
 enum Palette {
-    static let bg = Color(light: 0xF3F5F7, dark: 0x0D1217)
-    static let surface = Color(light: 0xFFFFFF, dark: 0x161D24)
-    static let text = Color(light: 0x10161D, dark: 0xE8EDF1)
-    static let soft = Color(light: 0x3C4651, dark: 0xC3CCD4)
-    static let muted = Color(light: 0x5A6672, dark: 0x93A0AC)
-    static let line = Color(light: 0xDDE3E8, dark: 0x26303A)
-    static let lineStrong = Color(light: 0xC9D1D8, dark: 0x36424E)
-    static let ink = Color(light: 0x10161D, dark: 0xE8EDF1)
-    static let onInk = Color(light: 0xFFFFFF, dark: 0x0D1217)
-    static let red = Color(light: 0xC8372D, dark: 0xD9483A)
+    static let bg = Color(light: 0xF9FAFB, dark: 0x0A0A0A)
+    static let surface = Color(light: 0xFFFFFF, dark: 0x1A1A1A)
+    static let text = Color(light: 0x212121, dark: 0xE6E6E6)
+    static let soft = Color(light: 0x444444, dark: 0xCCCCCC)
+    static let muted = Color(light: 0x695F5E, dark: 0xB3B3B3)
+    static let line = Color(light: 0xD4D4D5, dark: 0x303030)
+    static let lineStrong = Color(light: 0xBEBEBF, dark: 0x404040)
+    static let ink = Color(light: 0x1B1C1D, dark: 0xE6E6E6)
+    static let onInk = Color(light: 0xFFFFFF, dark: 0x0A0A0A)
+    static let red = Color(light: 0xC5050C, dark: 0xC5050C)
     static let green = Color(light: 0x1F8A5B, dark: 0x3DBE84)
-    static let off = Color(light: 0xA3AEB8, dark: 0x4E5A66)
-    static let track = Color(light: 0xEBEFF2, dark: 0x222B34)
-    static let band = Color(light: 0xE3E8EC, dark: 0x2A3540)
+    static let off = Color(light: 0x999999, dark: 0x555555)
+    static let track = Color(light: 0xEDEDED, dark: 0x262626)
+    static let band = Color(light: 0xE6E6E6, dark: 0x2A2A2A)
 }
 
 extension Color {
