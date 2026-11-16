@@ -5,8 +5,9 @@
 "Flash right" builds it with SKATE_SIDE=1 (FSJ-R), then uploads to a plugged-in
 XIAO nRF52840. The side is passed as a compiler flag, so fsj.ino is never edited.
 
-Needs Python 3 with tkinter (the macOS /usr/bin/python3 has it; with Homebrew
-Python, `brew install python-tk`) and arduino-cli with the Seeeduino:nrf52 core
+Needs Python 3 with Tk 8.6 (python.org Python, or Homebrew Python plus
+`brew install python-tk`; the macOS /usr/bin/python3 ships Tk 8.5, which can
+draw a blank window) and arduino-cli with the Seeeduino:nrf52 core
 installed. arduino-cli is found in this order: the ARDUINO_CLI environment
 variable, PATH, then the copy bundled with Arduino IDE 2.
 
@@ -303,7 +304,7 @@ def main():
         import tkinter as tk
     except ImportError:
         sys.exit(
-            "tkinter is missing. Use /usr/bin/python3, or with Homebrew Python run "
+            "tkinter is missing. Use the python.org Python, or with Homebrew run "
             "`brew install python-tk`."
         )
     root = tk.Tk()
