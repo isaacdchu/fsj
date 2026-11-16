@@ -6,6 +6,25 @@ The firmware in `arduino/fsj/` runs on a Seeed XIAO nRF52840. It builds with the
 Seeeduino nRF52 core (`Seeeduino:nrf52`, v1.1.13). Install that core through the
 Arduino IDE Boards Manager first.
 
+### Flasher app
+
+`tools/flasher/flash_pods.py` is a small window with two buttons, Flash left
+and Flash right. Each one builds the firmware for that side (it passes
+`SKATE_SIDE` as a compiler flag, so `fsj.ino` is never edited) and uploads it to
+the plugged-in pod. If both pods are plugged in, it asks which port to use.
+
+It needs the Seeeduino nRF52 core installed (steps 1 to 3 below) and
+`arduino-cli`, which it finds on `PATH` or inside Arduino IDE 2. It needs a
+Python with Tk 8.6: the python.org installer has it, or with Homebrew run
+`brew install python-tk`. The macOS system `/usr/bin/python3` ships Tk 8.5,
+which can draw a blank window on recent macOS.
+
+```bash
+python3 tools/flasher/flash_pods.py
+```
+
+Set `FSJ_FQBN=Seeeduino:nrf52:xiaonRF52840Sense` to build for the Sense boards.
+
 ### Arduino IDE setup
 
 1. Open Arduino IDE > Settings and add this to "Additional boards manager URLs":
