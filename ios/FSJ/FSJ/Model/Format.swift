@@ -1,14 +1,14 @@
 import Foundation
 
 nonisolated enum Format {
-    /// "0.534"
-    static func seconds(_ t: Double) -> String {
-        String(format: "%.3f", t)
+    /// Seconds to whole milliseconds: 0.534 -> "534".
+    static func ms(_ seconds: Double) -> String {
+        String(Int((seconds * 1000).rounded()))
     }
 
-    /// "0.53"
-    static func secondsShort(_ t: Double) -> String {
-        String(format: "%.2f", t)
+    /// Seconds to milliseconds with one decimal: 0.01708 -> "17.1".
+    static func msTenths(_ seconds: Double) -> String {
+        String(format: "%.1f", seconds * 1000)
     }
 
     /// "00:03.4" for the recording timer.

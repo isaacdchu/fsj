@@ -220,7 +220,7 @@ private struct RecentList: View {
                     ForEach(Array(recent.enumerated()), id: \.element.id) { index, jump in
                         JumpRow(leading: jump.code.description, date: jump.date, airtime: jump.airtime)
                             .rowSeparator(index > 0)
-                            .accessibilityLabel("\(jump.code.spokenName), \(Format.seconds(jump.airtime)) seconds, \(Format.jumpDate(jump.date))")
+                            .accessibilityLabel("\(jump.code.spokenName), \(Format.ms(jump.airtime)) milliseconds, \(Format.jumpDate(jump.date))")
                     }
                 }
             }

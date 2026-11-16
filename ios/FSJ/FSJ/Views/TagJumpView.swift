@@ -41,13 +41,13 @@ struct TagJumpView: View {
                 .tracking(1)
                 .foregroundStyle(Palette.muted)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(Format.seconds(airtime))
+                Text(Format.ms(airtime))
                     .font(.mono(72, .medium))
                     .monospacedDigit()
                     .tracking(-2.9)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
-                Text("s")
+                Text("ms")
                     .font(.ui(22, .medium))
                     .foregroundStyle(Palette.muted)
             }
@@ -59,7 +59,7 @@ struct TagJumpView: View {
         .padding(.top, 8)
         .padding(.bottom, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Airtime \(Format.seconds(airtime)) seconds, from pod data")
+        .accessibilityLabel("Airtime \(Format.ms(airtime)) milliseconds, from pod data")
     }
 
     private var rotationPicker: some View {
