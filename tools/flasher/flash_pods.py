@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""FSJ pod flasher: a two-button window that builds and uploads the skate firmware.
+"""FSJ pod flasher: pick a board, then flash it as the left or right skate.
 
-"Flash left" builds arduino/fsj with SKATE_SIDE=0 (advertises as FSJ-L) and
-"Flash right" builds it with SKATE_SIDE=1 (FSJ-R), then uploads to a plugged-in
-XIAO nRF52840. The side is passed as a compiler flag, so fsj.ino is never edited.
+The window lists the plugged-in XIAO nRF52840 boards in a dropdown. Once one is
+picked, "Flash left" builds arduino/fsj with SKATE_SIDE=0 (advertises as FSJ-L)
+and "Flash right" builds it with SKATE_SIDE=1 (FSJ-R), then uploads to that
+board. The side is passed as a compiler flag, so fsj.ino is never edited.
 
 Needs Python 3 with Tk 8.6 (python.org Python, or Homebrew Python plus
 `brew install python-tk`; the macOS /usr/bin/python3 ships Tk 8.5, which can
@@ -131,17 +132,31 @@ def list_xiao_ports(cli):
 
 
 class FlasherApp:
+    PLACEHOLDER = "Pick a board..."
+
     def __init__(self, root):
         import tkinter as tk
-        from tkinter import scrolledtext
+        from tkinter import scrolledtext, ttk
 
-        self.tk = tk
         self.root = root
         self.events = queue.Queue()
         self.busy = False
+        self.ports = []  # (address, label) from the last scan
 
         root.title("FSJ pod flasher")
-        root.minsize(520, 360)
+        root.minsize(520, 380)
+
+        board_row = tk.Frame(root)
+        board_row.pack(fill="x", padx=12, pady=(12, 0))
+        tk.Label(board_row, text="Board:").pack(side="left")
+        self.board_var = tk.StringVar(value=self.PLACEHOLDER)
+        self.board_box = ttk.Combobox(
+            board_row, textvariable=self.board_var, state="readonly", values=[],
+        )
+        self.board_box.pack(side="left", expand=True, fill="x", padx=6)
+        self.board_box.bind("<<ComboboxSelected>>", lambda _e: self.on_board_picked())
+        self.refresh_btn = tk.Button(board_row, text="Refresh", command=self.refresh_ports)
+        self.refresh_btn.pack(side="left")
 
         buttons = tk.Frame(root)
         buttons.pack(fill="x", padx=12, pady=12)
@@ -156,13 +171,15 @@ class FlasherApp:
         self.left_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
         self.right_btn.pack(side="left", expand=True, fill="x", padx=(6, 0))
 
-        self.status = tk.Label(root, text="Plug in a pod and pick its side.", anchor="w")
+        self.status = tk.Label(root, text="", anchor="w", justify="left", wraplength=500)
         self.status.pack(fill="x", padx=12)
 
         self.log = scrolledtext.ScrolledText(root, height=16, state="disabled")
         self.log.pack(fill="both", expand=True, padx=12, pady=(6, 12))
 
+        self.update_controls()
         root.after(100, self.drain_events)
+        self.refresh_ports()
 
     # ---- UI helpers (main thread only) --------------------------------------
 
@@ -172,11 +189,44 @@ class FlasherApp:
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def selected_port(self):
+        label = self.board_var.get()
+        for address, port_label in self.ports:
+            if port_label == label:
+                return address
+        return None
+
+    def update_controls(self):
+        # The side buttons only work once a board is picked.
+        side_state = "normal" if not self.busy and self.selected_port() else "disabled"
+        self.left_btn.configure(state=side_state)
+        self.right_btn.configure(state=side_state)
+        self.refresh_btn.configure(state="disabled" if self.busy else "normal")
+        self.board_box.configure(state="disabled" if self.busy else "readonly")
+
     def set_busy(self, busy):
         self.busy = busy
-        state = "disabled" if busy else "normal"
-        self.left_btn.configure(state=state)
-        self.right_btn.configure(state=state)
+        self.update_controls()
+
+    def on_board_picked(self):
+        self.status.configure(text="Now pick the side for this board.")
+        self.update_controls()
+
+    def show_ports(self, ports):
+        # Keep the current pick if that board is still plugged in. Never pick
+        # one automatically, so the user always chooses the board first.
+        previous = self.selected_port()
+        self.ports = ports
+        self.board_box.configure(values=[label for _, label in ports])
+        keep = [label for address, label in ports if address == previous]
+        self.board_var.set(keep[0] if keep else self.PLACEHOLDER)
+        if not ports:
+            self.status.configure(
+                text="No board found. Plug a pod in with a data USB cable, then press Refresh."
+            )
+        elif not keep:
+            self.status.configure(text="Pick a board, then pick its side.")
+        self.update_controls()
 
     def drain_events(self):
         try:
@@ -186,65 +236,44 @@ class FlasherApp:
                     self.append_log(payload)
                 elif kind == "status":
                     self.status.configure(text=payload)
-                elif kind == "pick_port":
-                    side, ports, reply = payload
-                    reply.put(self.ask_port(side, ports))
+                elif kind == "ports":
+                    self.show_ports(payload)
                 elif kind == "done":
                     self.set_busy(False)
         except queue.Empty:
             pass
         self.root.after(100, self.drain_events)
 
-    def ask_port(self, side, ports):
-        """Modal list of ports when more than one board is plugged in. Returns an address or None."""
-        tk = self.tk
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Choose a port")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        tk.Label(
-            dialog,
-            justify="left",
-            text=(
-                f"{len(ports)} pods are plugged in. Pick the {side} one.\n"
-                "Not sure? Unplug the other pod and try again."
-            ),
-        ).pack(padx=12, pady=(12, 6), anchor="w")
-        listbox = tk.Listbox(dialog, height=len(ports), width=50)
-        for _, label in ports:
-            listbox.insert("end", label)
-        listbox.selection_set(0)
-        listbox.pack(padx=12, fill="x")
+    # ---- background work ----------------------------------------------------
 
-        choice = {"address": None}
+    def emit(self, kind, payload):
+        self.events.put((kind, payload))
 
-        def ok():
-            sel = listbox.curselection()
-            if sel:
-                choice["address"] = ports[sel[0]][0]
-            dialog.destroy()
+    def refresh_ports(self):
+        if self.busy:
+            return
+        self.set_busy(True)
+        self.status.configure(text="Looking for boards...")
+        threading.Thread(target=self.scan_ports, daemon=True).start()
 
-        row = tk.Frame(dialog)
-        row.pack(pady=12)
-        tk.Button(row, text="Flash", command=ok).pack(side="left", padx=6)
-        tk.Button(row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
-        listbox.bind("<Double-Button-1>", lambda _e: ok())
-        self.root.wait_window(dialog)
-        return choice["address"]
-
-    # ---- flashing (worker thread) -------------------------------------------
+    def scan_ports(self):
+        try:
+            self.emit("ports", list_xiao_ports(find_arduino_cli()))
+        except Exception as e:
+            self.emit("ports", [])
+            self.emit("status", str(e))
+        finally:
+            self.emit("done", None)
 
     def start(self, side):
-        if self.busy:
+        port = self.selected_port()
+        if self.busy or port is None:
             return
         self.set_busy(True)
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
-        threading.Thread(target=self.flash, args=(side,), daemon=True).start()
-
-    def emit(self, kind, payload):
-        self.events.put((kind, payload))
+        threading.Thread(target=self.flash, args=(side, port), daemon=True).start()
 
     def run(self, cmd):
         self.emit("log", "$ " + " ".join(f'"{c}"' if " " in c else c for c in cmd) + "\n")
@@ -256,41 +285,22 @@ class FlasherApp:
         proc.wait()
         return proc.returncode
 
-    def pick_port(self, cli, side):
-        ports = list_xiao_ports(cli)
-        if not ports:
-            raise FlashError(
-                "No XIAO nRF52840 found. Plug the pod in with a data USB cable. "
-                "If it still doesn't show up, double-tap its reset button and try again."
-            )
-        if len(ports) == 1:
-            return ports[0][0]
-        reply = queue.Queue()
-        self.emit("pick_port", (side, ports, reply))
-        return reply.get()
-
-    def flash(self, side):
+    def flash(self, side, port):
         name = SIDES[side]["name"]
         try:
             cli = find_arduino_cli()
 
             self.emit("status", f"Building {side} firmware ({name})...")
             if self.run(compile_command(cli, side)) != 0:
-                raise FlashError("Build failed. See the log above.")
-
-            self.emit("status", "Looking for the pod...")
-            port = self.pick_port(cli, side)
-            if port is None:
-                self.emit("status", "Cancelled.")
-                return
+                raise FlashError("Build failed. See the log below.")
 
             self.emit("status", f"Uploading {name} to {port}...")
             if self.run(upload_command(cli, side, port)) != 0:
                 raise FlashError(
-                    "Upload failed. Double-tap the pod's reset button (the LED pulses) "
-                    "and try again."
+                    "Upload failed. Double-tap the pod's reset button (the LED pulses), "
+                    "press Refresh, pick the board again and retry."
                 )
-            self.emit("status", f"Done. This pod is now the {side} skate ({name}).")
+            self.emit("status", f"Done. The board on {port} is now the {side} skate ({name}).")
         except FlashError as e:
             self.emit("status", str(e))
         except Exception as e:  # keep the window usable whatever goes wrong
