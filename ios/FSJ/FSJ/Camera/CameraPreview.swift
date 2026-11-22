@@ -55,8 +55,10 @@ final class FrameLoader {
     func show(frame: Int) {
         guard let generator, let clip else { return }
         task?.cancel()
-        // Aim for the middle of the frame so rounding never lands on its neighbour.
-        let time = CMTime(seconds: (Double(frame) + 0.5) / clip.fps, preferredTimescale: 600_000)
+        // The file's timeline starts at the first frame. Aim half a frame
+        // past this one so rounding never lands on its neighbour.
+        let seconds = clip.hostTime(at: frame) - clip.frameTimes[0] + 0.5 / clip.fps
+        let time = CMTime(seconds: seconds, preferredTimescale: 600_000)
         task = Task { [weak self] in
             guard let result = try? await generator.image(at: time) else { return }
             guard !Task.isCancelled else { return }

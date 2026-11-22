@@ -7,20 +7,60 @@ import Photos
 nonisolated struct VideoClip: Equatable, Sendable {
     /// Nil for the made-up clip used where there is no camera (Simulator).
     var url: URL?
+    /// Nominal frame rate.
     var fps: Double
-    var frameCount: Int
+    /// When each frame was captured, on the phone's host clock (seconds),
+    /// one per frame in the file. The pods are synced to the same clock.
+    var frameTimes: [Double]
 
+    init(url: URL?, fps: Double, frameTimes: [Double]) {
+        self.url = url
+        self.fps = fps
+        self.frameTimes = frameTimes.isEmpty ? [0] : frameTimes
+    }
+
+    /// Evenly spaced frames starting at `startHost`.
+    init(url: URL?, fps: Double, frameCount: Int, startHost: Double = 0) {
+        self.init(url: url, fps: fps, frameTimes: (0..<max(1, frameCount)).map { startHost + Double($0) / fps })
+    }
+
+    var frameCount: Int { frameTimes.count }
     var lastFrame: Int { max(0, frameCount - 1) }
+
+    /// Host time of a frame.
+    func hostTime(at frame: Int) -> Double {
+        frameTimes[min(max(frame, 0), lastFrame)]
+    }
 
     /// Milliseconds from the start of the clip to this frame.
     func ms(at frame: Int) -> Double {
-        Double(frame) / fps * 1000
+        (hostTime(at: frame) - frameTimes[0]) * 1000
+    }
+
+    /// Where a host time falls, in (fractional) frames. Times outside the
+    /// clip are extended at the nominal frame rate.
+    func framePosition(ofHost t: Double) -> Double {
+        let first = frameTimes[0], last = frameTimes[lastFrame]
+        if t <= first || lastFrame == 0 { return (t - first) * fps }
+        if t >= last { return Double(lastFrame) + (t - last) * fps }
+        // Last frame at or before t.
+        var lo = 0, hi = lastFrame
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2
+            if frameTimes[mid] <= t { lo = mid } else { hi = mid }
+        }
+        let span = frameTimes[hi] - frameTimes[lo]
+        return Double(lo) + (span > 0 ? (t - frameTimes[lo]) / span : 0)
     }
 
     /// The made-up 240 fps clip from the mockup: a jump from frame 300 to 428.
     static let simulated = VideoClip(url: nil, fps: 240, frameCount: 768)
     static let simulatedTakeoff = 300
     static let simulatedLanding = 428
+
+    static func simulated(startHost: Double) -> VideoClip {
+        VideoClip(url: nil, fps: 240, frameCount: 768, startHost: startHost)
+    }
 }
 
 nonisolated enum CameraError: LocalizedError, Sendable {
@@ -28,6 +68,7 @@ nonisolated enum CameraError: LocalizedError, Sendable {
     case noCamera
     case notReady
     case photosNotAllowed
+    case noFrames
 
     var errorDescription: String? {
         switch self {
@@ -35,12 +76,13 @@ nonisolated enum CameraError: LocalizedError, Sendable {
         case .noCamera: "No camera is available."
         case .notReady: "The camera isn't ready yet."
         case .photosNotAllowed: "FSJ can't add videos to Photos. Allow it in the Settings app."
+        case .noFrames: "The camera recorded no frames."
         }
     }
 }
 
 /// The back camera, set to its highest frame rate up to 240 fps, recording
-/// to a movie file. Where there is no camera (Simulator) it reports
+/// to a movie file and noting each frame's time on the phone's clock. Where there is no camera (Simulator) it reports
 /// `isSimulated` and hands back `VideoClip.simulated` instead.
 @Observable
 final class CameraRecorder {
@@ -56,7 +98,7 @@ final class CameraRecorder {
 
     @ObservationIgnored let capture = CameraCapture()
     @ObservationIgnored private var configured = false
-    @ObservationIgnored private var simulatedStart: Date?
+    @ObservationIgnored private var simulatedStart: Double?
 
     var isSimulated: Bool {
         #if targetEnvironment(simulator)
@@ -96,7 +138,9 @@ final class CameraRecorder {
 
     func startRecording() async throws {
         if isSimulated {
-            simulatedStart = .now
+            let now = HostClock.now()
+            simulatedStart = now
+            SimulatedScene.videoStarted(at: now)
             return
         }
         guard state == .ready else { throw CameraError.notReady }
@@ -108,12 +152,13 @@ final class CameraRecorder {
 
     func stopRecording() async throws -> VideoClip {
         if isSimulated {
+            let start = simulatedStart ?? HostClock.now()
             simulatedStart = nil
             try await Task.sleep(for: .milliseconds(300))
-            return .simulated
+            return .simulated(startHost: start)
         }
-        let url = try await capture.stopRecording()
-        return try await Self.clip(at: url, fallbackFPS: fps)
+        let recording = try await capture.stopRecording()
+        return VideoClip(url: recording.url, fps: fps, frameTimes: recording.frameTimes)
     }
 
     func discard(_ clip: VideoClip) {
@@ -140,27 +185,27 @@ final class CameraRecorder {
         default: false
         }
     }
-
-    private static func clip(at url: URL, fallbackFPS: Double) async throws -> VideoClip {
-        let asset = AVURLAsset(url: url)
-        let duration = try await asset.load(.duration)
-        var fps = fallbackFPS
-        if let track = try await asset.loadTracks(withMediaType: .video).first {
-            let rate = try await track.load(.nominalFrameRate)
-            if rate > 0 { fps = Double(rate) }
-        }
-        let frames = max(1, Int((duration.seconds * fps).rounded(.down)))
-        return VideoClip(url: url, fps: fps, frameCount: frames)
-    }
 }
 
-/// AVFoundation side, kept off the main actor. All session work runs on
-/// `queue`.
-nonisolated final class CameraCapture: NSObject, AVCaptureFileOutputRecordingDelegate, @unchecked Sendable {
+/// A finished recording: the movie file and each frame's host time.
+nonisolated struct CameraRecording: Sendable {
+    var url: URL
+    var frameTimes: [Double]
+}
+
+/// AVFoundation side, kept off the main actor. Session work and every
+/// camera frame run on `queue`. Frames go through a video data output into
+/// an asset writer, so each frame's capture time is known exactly.
+nonisolated final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
-    private let output = AVCaptureMovieFileOutput()
+    private let output = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "fsj.camera")
-    private var finished: CheckedContinuation<URL, Error>?
+
+    // Only touched on `queue`.
+    private var writer: AVAssetWriter?
+    private var input: AVAssetWriterInput?
+    private var sessionStarted = false
+    private var frameTimes: [Double] = []
 
     /// Set up the back camera at its highest frame rate up to 240 fps.
     /// Returns the frame rate it chose.
@@ -187,6 +232,8 @@ nonisolated final class CameraCapture: NSObject, AVCaptureFileOutputRecordingDel
         session.sessionPreset = .inputPriority
         guard session.canAddInput(input), session.canAddOutput(output) else { throw CameraError.noCamera }
         session.addInput(input)
+        output.alwaysDiscardsLateVideoFrames = false
+        output.setSampleBufferDelegate(self, queue: queue)
         session.addOutput(output)
 
         // Highest frame rate up to 240, then the widest picture up to 1080p.
@@ -225,7 +272,7 @@ nonisolated final class CameraCapture: NSObject, AVCaptureFileOutputRecordingDel
     func stopRunningUnlessRecording() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             queue.async {
-                if self.session.isRunning, !self.output.isRecording { self.session.stopRunning() }
+                if self.session.isRunning, self.writer == nil { self.session.stopRunning() }
                 cont.resume()
             }
         }
@@ -234,46 +281,74 @@ nonisolated final class CameraCapture: NSObject, AVCaptureFileOutputRecordingDel
     func startRecording(to url: URL) async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async {
-                guard self.session.isRunning, !self.output.isRecording else {
-                    cont.resume(throwing: CameraError.notReady)
-                    return
+                do {
+                    try self.startWriting(to: url)
+                    cont.resume()
+                } catch {
+                    cont.resume(throwing: error)
                 }
-                self.output.startRecording(to: url, recordingDelegate: self)
-                cont.resume()
             }
         }
+    }
+
+    private func startWriting(to url: URL) throws {
+        guard session.isRunning, writer == nil else { throw CameraError.notReady }
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: output.recommendedVideoSettingsForAssetWriter(writingTo: .mov)
+        )
+        input.expectsMediaDataInRealTime = true
+        // Camera frames arrive landscape; the phone is held upright.
+        input.transform = CGAffineTransform(rotationAngle: .pi / 2)
+        guard writer.canAdd(input) else { throw CameraError.notReady }
+        writer.add(input)
+        guard writer.startWriting() else { throw writer.error ?? CameraError.notReady }
+        frameTimes = []
+        sessionStarted = false
+        self.writer = writer
+        self.input = input
     }
 
     /// Stop recording and wait until the file is written.
-    func stopRecording() async throws -> URL {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
+    func stopRecording() async throws -> CameraRecording {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<CameraRecording, Error>) in
             queue.async {
-                guard self.output.isRecording else {
+                guard let writer = self.writer, let input = self.input else {
                     cont.resume(throwing: CameraError.notReady)
                     return
                 }
-                self.finished = cont
-                self.output.stopRecording()
+                self.writer = nil
+                self.input = nil
+                let times = self.frameTimes
+                self.frameTimes = []
+                guard !times.isEmpty, writer.status == .writing else {
+                    writer.cancelWriting()
+                    cont.resume(throwing: writer.error ?? CameraError.noFrames)
+                    return
+                }
+                input.markAsFinished()
+                writer.finishWriting {
+                    if writer.status == .completed {
+                        cont.resume(returning: CameraRecording(url: writer.outputURL, frameTimes: times))
+                    } else {
+                        cont.resume(throwing: writer.error ?? CameraError.noFrames)
+                    }
+                }
             }
         }
     }
 
-    func fileOutput(
-        _ output: AVCaptureFileOutput,
-        didFinishRecordingTo outputFileURL: URL,
-        from connections: [AVCaptureConnection],
-        error: Error?
-    ) {
-        queue.async {
-            guard let cont = self.finished else { return }
-            self.finished = nil
-            // AVFoundation can report an error even though the file is fine
-            // (for example when stopped by a disk-space limit).
-            if let error, (error as NSError).userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool != true {
-                cont.resume(throwing: error)
-            } else {
-                cont.resume(returning: outputFileURL)
-            }
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let writer, let input, writer.status == .writing, input.isReadyForMoreMediaData else { return }
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if !sessionStarted {
+            // The file's timeline starts at the first frame.
+            writer.startSession(atSourceTime: pts)
+            sessionStarted = true
         }
+        guard input.append(sampleBuffer) else { return }
+        let clock = session.synchronizationClock ?? CMClockGetHostTimeClock()
+        frameTimes.append(CMSyncConvertTime(pts, from: clock, to: CMClockGetHostTimeClock()).seconds)
     }
 }

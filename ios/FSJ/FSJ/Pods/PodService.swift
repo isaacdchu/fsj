@@ -38,6 +38,18 @@ nonisolated struct PodStatus: Sendable, Equatable {
 nonisolated struct PodCapture: Sendable {
     var sampleRateHz: Double
     var samples: [PodSide: [ImuSample]]
+    /// Each sample's time on the pod's own clock (micros), same order as `samples`.
+    var times: [PodSide: [Int64]] = [:]
+    /// How each pod's clock maps to the phone's. Missing if the pod could
+    /// not be synced (for example older firmware).
+    var clocks: [PodSide: PodClock] = [:]
+
+    /// Each sample's time on the phone's host clock, if this pod was synced.
+    func hostTimes(_ side: PodSide) -> [Double]? {
+        guard let clock = clocks[side], let times = times[side],
+              times.count == samples[side]?.count else { return nil }
+        return times.map { clock.hostTime(podMicros: $0) }
+    }
 }
 
 nonisolated enum PodServiceError: LocalizedError, Sendable {

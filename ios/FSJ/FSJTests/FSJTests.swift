@@ -160,3 +160,88 @@ struct VideoClipTests {
         #expect(Format.ms(clip.ms(at: 128) / 1000) == "533")
     }
 }
+
+@MainActor
+struct ClockSyncTests {
+    @Test func syncReplyMatchesFirmware() throws {
+        // struct SyncReply { uint8_t id; uint32_t t_us; } in arduino/fsj/protocol.h
+        let reply = try #require(SyncReply(Data([7, 0xEF, 0xBE, 0xAD, 0xDE])))
+        #expect(reply.id == 7)
+        #expect(reply.tMicros == 0xDEADBEEF)
+        #expect(reply.encoded.count == SyncReply.byteCount)
+        #expect(SyncReply(reply.encoded) == reply)
+        #expect(SyncReply(Data(count: 4)) == nil)
+        #expect(FSJProtocol.version == 3)
+    }
+
+    @Test func microsUnwrapAcrossOverflow() {
+        var u = MicrosUnwrapper()
+        #expect(u.unwrap(UInt32.max - 999) == Int64(UInt32.max) - 999)
+        #expect(u.unwrap(500) == Int64(UInt32.max) + 501)
+        // A slightly older reading (packets and pings interleave) goes back, not forward.
+        #expect(u.unwrap(400) == Int64(UInt32.max) + 401)
+    }
+
+    @Test func shortestRoundTripWins() {
+        let samples = [
+            ClockSample(podMicros: 1, hostSeconds: 10, roundTrip: 0.040),
+            ClockSample(podMicros: 2, hostSeconds: 11, roundTrip: 0.018),
+            ClockSample(podMicros: 3, hostSeconds: 12, roundTrip: 0.030),
+        ]
+        #expect(ClockSample.best(samples)?.podMicros == 2)
+        #expect(ClockSample.best([]) == nil)
+    }
+
+    @Test func clockFitsOffsetAndDrift() throws {
+        // Pod clock runs 100 ppm slow relative to the phone.
+        let before = ClockSample(podMicros: 5_000_000, hostSeconds: 1000, roundTrip: 0.02)
+        let after = ClockSample(podMicros: 15_000_000, hostSeconds: 1010.001, roundTrip: 0.03)
+        let clock = try #require(PodClock.fit(before: before, after: after))
+        #expect(abs(clock.rate - 1.0001) < 1e-9)
+        #expect(abs(clock.hostTime(podMicros: 10_000_000) - 1005.0005) < 1e-6)
+        #expect(abs(clock.uncertainty - 0.015) < 1e-12)
+    }
+
+    @Test func implausibleDriftIsIgnored() throws {
+        let before = ClockSample(podMicros: 0, hostSeconds: 0, roundTrip: 0.02)
+        let after = ClockSample(podMicros: 2_000_000, hostSeconds: 2.1, roundTrip: 0.02)
+        let clock = try #require(PodClock.fit(before: before, after: after))
+        #expect(clock.rate == 1)
+        #expect(PodClock.fit(before: nil, after: after)?.hostSeconds == 2.1)
+        #expect(PodClock.fit(before: nil, after: nil) == nil)
+    }
+
+    @Test func hostTimeToVideoFrame() {
+        // 240 fps clip with one dropped frame after frame 9.
+        var times = (0..<10).map { 100 + Double($0) / 240 }
+        times += (11..<20).map { 100 + Double($0) / 240 }
+        let clip = VideoClip(url: nil, fps: 240, frameTimes: times)
+        #expect(clip.lastFrame == 18)
+        #expect(abs(clip.framePosition(ofHost: 100 + 3.5 / 240) - 3.5) < 1e-9)
+        // Frame 10 is the one captured at 11/240.
+        #expect(abs(clip.framePosition(ofHost: 100 + 11 / 240.0) - 10) < 1e-9)
+        #expect(abs(clip.framePosition(ofHost: 100 - 2 / 240.0) - -2) < 1e-9)
+        #expect(Format.ms(clip.ms(at: 10) / 1000) == "46")
+    }
+
+    @Test func syncedCaptureLinesUpTheJump() throws {
+        let still = ImuSample(ax: 0, ay: 0, az: 1000, gx: 0, gy: 0, gz: 0)
+        let air = ImuSample(ax: 0, ay: 0, az: 0, gx: 0, gy: 0, gz: 0)
+        let samples = Array(repeating: still, count: 100) + Array(repeating: air, count: 50) + Array(repeating: still, count: 100)
+        // Pod clock reads 2 s when the phone reads 500 s.
+        let times = samples.indices.map { 2_000_000 + Int64($0) * 10_000 }
+        let capture = PodCapture(
+            sampleRateHz: 100,
+            samples: [.left: samples],
+            times: [.left: times],
+            clocks: [.left: PodClock(podMicros: 2_000_000, hostSeconds: 500, uncertainty: 0.004)]
+        )
+        let pods = try #require(AirtimeEstimator().synced(capture))
+        #expect(pods.traces.count == 1)
+        let takeoff = try #require(pods.takeoff), landing = try #require(pods.landing)
+        #expect(abs(takeoff - 500.995) < 1e-9)
+        #expect(abs(landing - 501.495) < 1e-9)
+        #expect(pods.uncertainty == 0.004)
+        #expect(AirtimeEstimator().synced(PodCapture(sampleRateHz: 100, samples: [.left: samples])) == nil)
+    }
+}
