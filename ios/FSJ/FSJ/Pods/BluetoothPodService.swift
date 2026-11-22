@@ -10,12 +10,17 @@ import Observation
 /// characteristic, which makes them power the IMU and stream; Stop writes
 /// `PodCommand.stop`. Writes use responses, so Start only returns once both
 /// pods have acknowledged it.
+///
+/// Around each capture the app also syncs clocks with both pods (see
+/// ClockSync.swift): a burst of pings before Start and another after Stop,
+/// so every sample gets a time on the phone's clock.
 @Observable
 final class BluetoothPodService: NSObject, PodService {
     private static let serviceUUID = CBUUID(string: FSJProtocol.serviceUUID)
     private static let dataUUID = CBUUID(string: FSJProtocol.dataUUID)
     private static let infoUUID = CBUUID(string: FSJProtocol.infoUUID)
     private static let controlUUID = CBUUID(string: FSJProtocol.controlUUID)
+    private static let syncUUID = CBUUID(string: FSJProtocol.syncUUID)
     private static let batteryServiceUUID = CBUUID(string: "180F")
     private static let batteryLevelUUID = CBUUID(string: "2A19")
 
@@ -23,6 +28,9 @@ final class BluetoothPodService: NSObject, PodService {
     private static let commandTimeout: Duration = .seconds(2)
     /// How long to keep taking packets after the pods acknowledge Stop.
     private static let drainTime: Duration = .milliseconds(150)
+    /// Pings per pod in each sync burst; the shortest round trip wins.
+    private static let pingsPerSync = 10
+    private static let pingTimeout: Duration = .milliseconds(300)
 
     private var statuses: [PodSide: PodStatus] = [:]
 
@@ -32,6 +40,7 @@ final class BluetoothPodService: NSObject, PodService {
     @ObservationIgnored private var peripherals: [PodSide: CBPeripheral] = [:]
     @ObservationIgnored private var dataCharacteristics: [PodSide: CBCharacteristic] = [:]
     @ObservationIgnored private var controlCharacteristics: [PodSide: CBCharacteristic] = [:]
+    @ObservationIgnored private var syncCharacteristics: [PodSide: CBCharacteristic] = [:]
     /// Sides whose data characteristic is confirmed subscribed.
     @ObservationIgnored private var subscribed: Set<PodSide> = []
     @ObservationIgnored private var pendingWrites: [PodSide: PendingWrite] = [:]
@@ -40,6 +49,11 @@ final class BluetoothPodService: NSObject, PodService {
     @ObservationIgnored private var collecting = false
     @ObservationIgnored private var buffers: [PodSide: [ImuSample]] = [:]
     @ObservationIgnored private var lastSeq: [PodSide: UInt16] = [:]
+    @ObservationIgnored private var sampleTimes: [PodSide: [Int64]] = [:]
+    @ObservationIgnored private var unwrappers: [PodSide: MicrosUnwrapper] = [:]
+    @ObservationIgnored private var syncBefore: [PodSide: ClockSample] = [:]
+    @ObservationIgnored private var pendingPings: [PodSide: PendingPing] = [:]
+    @ObservationIgnored private var nextPingID: UInt8 = 0
     @ObservationIgnored private(set) var droppedPackets = 0
 
     // MARK: PodService
@@ -83,8 +97,11 @@ final class BluetoothPodService: NSObject, PodService {
         guard central?.state == .poweredOn else { throw PodServiceError.bluetoothUnavailable }
         guard bothConnected else { throw PodServiceError.notConnected }
         buffers = [:]
+        sampleTimes = [:]
         lastSeq = [:]
+        unwrappers = [:]
         droppedPackets = 0
+        syncBefore = await syncClocks()
         collecting = true
         do {
             for side in PodSide.allCases {
@@ -110,8 +127,19 @@ final class BluetoothPodService: NSObject, PodService {
         }
         try? await Task.sleep(for: Self.drainTime)
         collecting = false
-        let capture = PodCapture(sampleRateHz: FSJProtocol.sampleRateHz, samples: buffers)
+        let syncAfter = await syncClocks()
+        var clocks: [PodSide: PodClock] = [:]
+        for side in PodSide.allCases {
+            clocks[side] = PodClock.fit(before: syncBefore[side], after: syncAfter[side])
+        }
+        let capture = PodCapture(
+            sampleRateHz: FSJProtocol.sampleRateHz,
+            samples: buffers,
+            times: sampleTimes,
+            clocks: clocks
+        )
         buffers = [:]
+        sampleTimes = [:]
         if droppedPackets > 0 {
             print("BluetoothPodService: \(droppedPackets) packets dropped during capture")
         }
@@ -153,6 +181,66 @@ final class BluetoothPodService: NSObject, PodService {
         }
     }
 
+    // MARK: Clock sync
+
+    private struct PendingPing {
+        var id: UInt8
+        var sentAt: Double
+        var continuation: CheckedContinuation<ClockSample?, Never>
+    }
+
+    /// A burst of pings to both pods at once. Returns the best ping per pod;
+    /// a pod without the sync characteristic (older firmware) is left out.
+    private func syncClocks() async -> [PodSide: ClockSample] {
+        async let left = bestPing(.left)
+        async let right = bestPing(.right)
+        var out: [PodSide: ClockSample] = [:]
+        out[.left] = await left
+        out[.right] = await right
+        return out
+    }
+
+    private func bestPing(_ side: PodSide) async -> ClockSample? {
+        var samples: [ClockSample] = []
+        for _ in 0..<Self.pingsPerSync {
+            guard syncCharacteristics[side] != nil else { break }
+            if let sample = await ping(side) { samples.append(sample) }
+        }
+        return ClockSample.best(samples)
+    }
+
+    /// One ping. Nil if the pod didn't answer in time.
+    private func ping(_ side: PodSide) async -> ClockSample? {
+        guard let peripheral = peripherals[side], let sync = syncCharacteristics[side] else { return nil }
+        nextPingID &+= 1
+        let id = nextPingID
+        return await withCheckedContinuation { (continuation: CheckedContinuation<ClockSample?, Never>) in
+            finishPing(on: side, with: nil)
+            let sentAt = HostClock.now()
+            pendingPings[side] = PendingPing(id: id, sentAt: sentAt, continuation: continuation)
+            peripheral.writeValue(Data([id]), for: sync, type: .withoutResponse)
+            Task { [weak self] in
+                try? await Task.sleep(for: Self.pingTimeout)
+                guard let self, self.pendingPings[side]?.id == id else { return }
+                self.finishPing(on: side, with: nil)
+            }
+        }
+    }
+
+    private func finishPing(on side: PodSide, with sample: ClockSample?) {
+        pendingPings.removeValue(forKey: side)?.continuation.resume(returning: sample)
+    }
+
+    private func answered(_ reply: SyncReply, from side: PodSide, at host: Double) {
+        guard let pending = pendingPings[side], pending.id == reply.id else { return }
+        let podMicros = unwrappers[side, default: MicrosUnwrapper()].unwrap(reply.tMicros)
+        finishPing(on: side, with: ClockSample(
+            podMicros: podMicros,
+            hostSeconds: (pending.sentAt + host) / 2,
+            roundTrip: host - pending.sentAt
+        ))
+    }
+
     // MARK: Internals
 
     private func setConnection(_ connection: PodConnection, for side: PodSide) {
@@ -165,9 +253,11 @@ final class BluetoothPodService: NSObject, PodService {
 
     private func forget(_ side: PodSide) {
         finishWrite(on: side, error: PodServiceError.notConnected)
+        finishPing(on: side, with: nil)
         peripherals[side] = nil
         dataCharacteristics[side] = nil
         controlCharacteristics[side] = nil
+        syncCharacteristics[side] = nil
         subscribed.remove(side)
         statuses[side] = PodStatus()
     }
@@ -238,6 +328,9 @@ final class BluetoothPodService: NSObject, PodService {
             case Self.controlUUID:
                 controlCharacteristics[side] = c
                 markConnectedIfReady(side)
+            case Self.syncUUID:
+                syncCharacteristics[side] = c
+                peripheral.setNotifyValue(true, for: c)
             case Self.infoUUID:
                 peripheral.readValue(for: c)
             case Self.batteryLevelUUID:
@@ -268,7 +361,7 @@ final class BluetoothPodService: NSObject, PodService {
         finishWrite(on: side, error: error.map { _ in PodServiceError.podDidNotRespond(side) })
     }
 
-    private func received(_ value: Data, from uuid: CBUUID, on peripheral: CBPeripheral) {
+    private func received(_ value: Data, from uuid: CBUUID, on peripheral: CBPeripheral, at host: Double) {
         guard let side = side(of: peripheral) else { return }
         switch uuid {
         case Self.dataUUID:
@@ -278,6 +371,11 @@ final class BluetoothPodService: NSObject, PodService {
             }
             lastSeq[side] = packet.seq
             buffers[side, default: []].append(contentsOf: packet.samples)
+            let t0 = unwrappers[side, default: MicrosUnwrapper()].unwrap(packet.t0Micros)
+            let step = Int64((1_000_000 / FSJProtocol.sampleRateHz).rounded())
+            sampleTimes[side, default: []].append(contentsOf: packet.samples.indices.map { t0 + Int64($0) * step })
+        case Self.syncUUID:
+            if let reply = SyncReply(value) { answered(reply, from: side, at: host) }
         case Self.batteryLevelUUID:
             if let level = value.first {
                 statuses[side, default: PodStatus()].batteryPercent = Int(level)
@@ -331,7 +429,10 @@ extension BluetoothPodService: CBPeripheralDelegate {
             for service in peripheral.services ?? [] {
                 switch service.uuid {
                 case Self.serviceUUID:
-                    peripheral.discoverCharacteristics([Self.dataUUID, Self.infoUUID, Self.controlUUID], for: service)
+                    peripheral.discoverCharacteristics(
+                        [Self.dataUUID, Self.infoUUID, Self.controlUUID, Self.syncUUID],
+                        for: service
+                    )
                 case Self.batteryServiceUUID:
                     peripheral.discoverCharacteristics([Self.batteryLevelUUID], for: service)
                 default:
@@ -346,9 +447,11 @@ extension BluetoothPodService: CBPeripheralDelegate {
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        // Read the clock first: for sync replies, every step before this adds error.
+        let host = HostClock.now()
         guard error == nil, let value = characteristic.value else { return }
         let uuid = characteristic.uuid
-        MainActor.assumeIsolated { self.received(value, from: uuid, on: peripheral) }
+        MainActor.assumeIsolated { self.received(value, from: uuid, on: peripheral, at: host) }
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {

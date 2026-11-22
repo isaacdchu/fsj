@@ -21,8 +21,9 @@ enum CameraPhase: Equatable {
     case filming(since: Date)
     /// Both stopped; finishing the video file and the pod data.
     case receiving
-    /// Step through the clip and mark takeoff and landing.
-    case mark(clip: VideoClip, podAirtime: Double?)
+    /// Step through the clip and mark takeoff and landing. `pods` is the pod
+    /// data on the video's clock, if the pods could be synced.
+    case mark(clip: VideoClip, podAirtime: Double?, pods: SyncedPods?)
 }
 
 /// A short message in the hint area of the Record screen.
@@ -182,14 +183,15 @@ final class AppModel {
             }
             let capture = try? await pods.stopStreaming()
             let podAirtime = capture.flatMap { estimator.airtime($0) }
+            let synced = capture.flatMap { estimator.synced($0) }
             cameraSaveError = nil
-            cameraPhase = .mark(clip: clip, podAirtime: podAirtime)
+            cameraPhase = .mark(clip: clip, podAirtime: podAirtime, pods: synced)
         }
     }
 
     /// Save the clip to Photos. `airtime` is the marked takeoff-to-landing time in seconds.
     func cameraSave(airtime: Double) {
-        guard case .mark(let clip, _) = cameraPhase else { return }
+        guard case .mark(let clip, _, _) = cameraPhase else { return }
         cameraSaveError = nil
         Task {
             do {
@@ -203,7 +205,7 @@ final class AppModel {
     }
 
     func cameraDiscard() {
-        guard case .mark(let clip, _) = cameraPhase else { return }
+        guard case .mark(let clip, _, _) = cameraPhase else { return }
         camera.discard(clip)
         cameraSaveError = nil
         cameraPhase = .idle

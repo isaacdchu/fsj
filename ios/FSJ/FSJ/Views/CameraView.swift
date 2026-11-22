@@ -6,8 +6,8 @@ struct CameraView: View {
 
     var body: some View {
         Group {
-            if case .mark(let clip, let podAirtime) = model.cameraPhase {
-                MarkJumpView(clip: clip, podAirtime: podAirtime)
+            if case .mark(let clip, let podAirtime, let pods) = model.cameraPhase {
+                MarkJumpView(clip: clip, podAirtime: podAirtime, pods: pods)
             } else {
                 viewfinder
             }
@@ -202,6 +202,8 @@ private extension View {
 struct MarkJumpView: View {
     var clip: VideoClip
     var podAirtime: Double?
+    /// Pod data on the video's clock; nil if the pods couldn't be synced.
+    var pods: SyncedPods?
 
     @Environment(AppModel.self) private var model
     @State private var frame = 0
@@ -222,7 +224,7 @@ struct MarkJumpView: View {
     /// Seconds between the marks.
     private var videoAirtime: Double? {
         guard ready, let takeoff, let landing else { return nil }
-        return Double(landing - takeoff) / clip.fps
+        return (clip.ms(at: landing) - clip.ms(at: takeoff)) / 1000
     }
 
     var body: some View {
@@ -232,6 +234,7 @@ struct MarkJumpView: View {
                 VStack(spacing: 14) {
                     viewer
                     scrubber
+                    podTrace
                     stepper
                     markButtons
                     comparison
@@ -366,6 +369,122 @@ struct MarkJumpView: View {
         Rectangle()
             .fill(Palette.red)
             .frame(width: 2, height: 24)
+    }
+
+    // MARK: Pod data
+
+    /// x position of a phone-clock time on a strip as wide as the scrubber.
+    private func x(host t: Double, width w: CGFloat) -> CGFloat {
+        guard clip.lastFrame > 0 else { return 0 }
+        return CGFloat(clip.framePosition(ofHost: t) / Double(clip.lastFrame)) * w
+    }
+
+    private static let traceMaxG = 3.0
+
+    @ViewBuilder
+    private var podTrace: some View {
+        if let pods {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    traceLegend("L", color: Palette.text)
+                    traceLegend("R", color: Palette.muted)
+                    Spacer()
+                    Text("Pod data, synced \u{00B1}\(Self.wholeMs(pods.uncertainty)) ms")
+                        .font(.ui(12))
+                        .foregroundStyle(Palette.muted)
+                }
+                traceCanvas(pods)
+                Text(offsetsLabel(pods))
+                    .font(.mono(12))
+                    .foregroundStyle(Palette.muted)
+            }
+        } else {
+            Text("Pod clocks not synced, so the pod data can't be lined up with the video.")
+                .font(.ui(12))
+                .foregroundStyle(Palette.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func traceLegend(_ label: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Capsule().fill(color).frame(width: 14, height: 3)
+            Text(label).font(.mono(12, .medium)).foregroundStyle(Palette.muted)
+        }
+    }
+
+    private func traceCanvas(_ pods: SyncedPods) -> some View {
+        let ink = Palette.text, soft = Palette.muted, red = Palette.red, line = Palette.line
+        let frame = frame, takeoff = takeoff, landing = landing
+        return GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            Canvas { ctx, _ in
+                // Shade where the pods were in the air.
+                for trace in pods.traces {
+                    guard let f = trace.flight else { continue }
+                    let a = x(host: f.lowerBound, width: w), b = x(host: f.upperBound, width: w)
+                    ctx.fill(Path(CGRect(x: a, y: 0, width: b - a, height: h)), with: .color(red.opacity(0.12)))
+                }
+                // 1 g reference.
+                let oneG = h - h / Self.traceMaxG
+                ctx.stroke(Path { $0.move(to: CGPoint(x: 0, y: oneG)); $0.addLine(to: CGPoint(x: w, y: oneG)) },
+                           with: .color(line), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                for trace in pods.traces {
+                    var path = Path()
+                    var started = false
+                    for (t, g) in zip(trace.hostTimes, trace.g) {
+                        let px = x(host: t, width: w)
+                        guard px >= -4, px <= w + 4 else { continue }
+                        let p = CGPoint(x: px, y: h - CGFloat(min(g, Self.traceMaxG) / Self.traceMaxG) * h)
+                        if started { path.addLine(to: p) } else { path.move(to: p) }
+                        started = true
+                    }
+                    ctx.stroke(path, with: .color(trace.side == .left ? ink : soft), lineWidth: 1.5)
+                }
+                // The video marks and the playhead.
+                for mark in [takeoff, landing].compactMap({ $0 }) {
+                    let mx = clip.lastFrame == 0 ? 0 : CGFloat(mark) / CGFloat(clip.lastFrame) * w
+                    ctx.fill(Path(CGRect(x: mx - 1, y: 0, width: 2, height: h)), with: .color(red))
+                }
+                let px = clip.lastFrame == 0 ? 0 : CGFloat(frame) / CGFloat(clip.lastFrame) * w
+                ctx.fill(Path(CGRect(x: px - 1, y: 0, width: 2, height: h)), with: .color(ink))
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard w > 0 else { return }
+                        let p = min(max(value.location.x / w, 0), 1)
+                        self.frame = Int((p * CGFloat(clip.lastFrame)).rounded())
+                    }
+            )
+        }
+        .frame(height: 72)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Palette.surface))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Pod acceleration lined up with the video")
+    }
+
+    /// How far the pods' takeoff and landing are from the marked frames.
+    private func offsetsLabel(_ pods: SyncedPods) -> String {
+        guard let podTakeoff = pods.takeoff, let podLanding = pods.landing else {
+            return "Pods found no jump"
+        }
+        guard let takeoff, let landing else { return "Mark takeoff and landing to compare" }
+        let t = Self.signedMs(podTakeoff - clip.hostTime(at: takeoff))
+        let l = Self.signedMs(podLanding - clip.hostTime(at: landing))
+        return "Pods vs video: takeoff \(t) ms, landing \(l) ms"
+    }
+
+    private static func wholeMs(_ seconds: Double) -> Int {
+        Int((seconds * 1000).rounded())
+    }
+
+    private static func signedMs(_ seconds: Double) -> String {
+        let ms = wholeMs(seconds)
+        return ms > 0 ? "+\(ms)" : ms < 0 ? "\u{2212}\(-ms)" : "0"
     }
 
     // MARK: Step and mark
@@ -535,6 +654,17 @@ private struct SimulatedJumpFrame: View {
 
 #Preview("Mark") {
     let model = AppModel.preview()
-    model.cameraPhase = .mark(clip: .simulated, podAirtime: 0.533)
+    let times = (0..<320).map { Double($0) / 100 }
+    let pods = SyncedPods(traces: PodSide.allCases.map { side in
+        let flight = (side == .left ? 1.255 : 1.250)...(side == .left ? 1.785 : 1.790)
+        return PodTrace(
+            side: side,
+            hostTimes: times,
+            g: times.map { flight.contains($0) ? 0.05 : 1 },
+            flight: flight,
+            uncertainty: 0.003
+        )
+    })
+    model.cameraPhase = .mark(clip: .simulated, podAirtime: 0.533, pods: pods)
     return CameraView().environment(model)
 }
