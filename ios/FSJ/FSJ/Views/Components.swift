@@ -49,9 +49,9 @@ struct PodPills: View {
                 let on = status.connection == .connected
                 HStack(spacing: 6) {
                     StatusDot(
-                        color: on ? (model.isStreaming ? Palette.red : Palette.green) : Palette.off,
+                        color: on ? (model.podsStreaming ? Palette.red : Palette.green) : Palette.off,
                         size: 6,
-                        pulsing: on && model.isStreaming
+                        pulsing: on && model.podsStreaming
                     )
                     Text(pillText(side, status))
                         .monospacedDigit()

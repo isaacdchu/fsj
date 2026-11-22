@@ -151,3 +151,12 @@ struct FormatTests {
         #expect(Format.msTenths(0.0170782512765993) == "17.1")
     }
 }
+
+@MainActor
+struct VideoClipTests {
+    @Test func framesConvertToMilliseconds() {
+        let clip = VideoClip(url: nil, fps: 240, frameCount: 768)
+        #expect(clip.lastFrame == 767)
+        #expect(Format.ms(clip.ms(at: 128) / 1000) == "533")
+    }
+}
