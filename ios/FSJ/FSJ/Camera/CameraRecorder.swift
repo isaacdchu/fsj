@@ -95,6 +95,8 @@ final class CameraRecorder {
 
     private(set) var state: State = .idle
     private(set) var fps: Double = 240
+    /// Filming with the front (selfie) camera instead of the back one.
+    private(set) var usesFrontCamera = false
 
     @ObservationIgnored let capture = CameraCapture()
     @ObservationIgnored private var configured = false
@@ -119,10 +121,24 @@ final class CameraRecorder {
         do {
             guard await Self.cameraAllowed() else { throw CameraError.notAllowed }
             if !configured {
-                fps = try await capture.configure()
+                fps = try await capture.configure(front: usesFrontCamera)
                 configured = true
             }
             await capture.startRunning()
+            state = .ready
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Switch between the back and front camera (not while recording).
+    func flip() async {
+        guard isSimulated || state == .ready else { return }
+        usesFrontCamera.toggle()
+        guard !isSimulated else { return }
+        state = .preparing
+        do {
+            fps = try await capture.configure(front: usesFrontCamera)
             state = .ready
         } catch {
             state = .failed(error.localizedDescription)
@@ -206,14 +222,15 @@ nonisolated final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleB
     private var input: AVAssetWriterInput?
     private var sessionStarted = false
     private var frameTimes: [Double] = []
+    private var cameraInput: AVCaptureDeviceInput?
 
-    /// Set up the back camera at its highest frame rate up to 240 fps.
-    /// Returns the frame rate it chose.
-    func configure() async throws -> Double {
+    /// Set up the back (or front) camera at its highest frame rate up to
+    /// 240 fps, replacing the camera in use. Returns the frame rate it chose.
+    func configure(front: Bool) async throws -> Double {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Double, Error>) in
             queue.async {
                 do {
-                    cont.resume(returning: try self.configureOnQueue())
+                    cont.resume(returning: try self.configureOnQueue(front: front))
                 } catch {
                     cont.resume(throwing: error)
                 }
@@ -221,8 +238,10 @@ nonisolated final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleB
         }
     }
 
-    private func configureOnQueue() throws -> Double {
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+    private func configureOnQueue(front: Bool) throws -> Double {
+        guard writer == nil else { throw CameraError.notReady }
+        let position: AVCaptureDevice.Position = front ? .front : .back
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) else {
             throw CameraError.noCamera
         }
         let input = try AVCaptureDeviceInput(device: device)
@@ -230,11 +249,19 @@ nonisolated final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleB
         session.beginConfiguration()
         defer { session.commitConfiguration() }
         session.sessionPreset = .inputPriority
-        guard session.canAddInput(input), session.canAddOutput(output) else { throw CameraError.noCamera }
+        if let old = cameraInput {
+            session.removeInput(old)
+            cameraInput = nil
+        }
+        guard session.canAddInput(input) else { throw CameraError.noCamera }
         session.addInput(input)
-        output.alwaysDiscardsLateVideoFrames = false
-        output.setSampleBufferDelegate(self, queue: queue)
-        session.addOutput(output)
+        cameraInput = input
+        if !session.outputs.contains(output) {
+            guard session.canAddOutput(output) else { throw CameraError.noCamera }
+            output.alwaysDiscardsLateVideoFrames = false
+            output.setSampleBufferDelegate(self, queue: queue)
+            session.addOutput(output)
+        }
 
         // Highest frame rate up to 240, then the widest picture up to 1080p.
         func rate(_ f: AVCaptureDevice.Format) -> Double {

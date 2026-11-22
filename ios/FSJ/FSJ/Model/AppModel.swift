@@ -95,6 +95,11 @@ final class AppModel {
         return false
     }
 
+    /// Filming, or finishing the video and pod data after Stop.
+    var cameraBusy: Bool {
+        isFilming || cameraPhase == .receiving
+    }
+
     /// Pods are streaming, from either the Record or the Camera tab.
     var podsStreaming: Bool { isStreaming || isFilming }
 

@@ -13,7 +13,9 @@ struct CameraView: View {
             }
         }
         .background(Palette.bg.ignoresSafeArea())
-        .toolbar(model.cameraPhase == .idle ? .visible : .hidden, for: .tabBar)
+        // The tab bar stays while filming so the preview doesn't change size;
+        // ContentView ignores tab taps until the clip is saved.
+        .toolbar(isMarking ? .hidden : .visible, for: .tabBar)
         .sensoryFeedback(.impact(weight: .medium), trigger: model.isFilming)
         .task { await model.camera.prepare() }
         .onDisappear {
@@ -50,7 +52,7 @@ struct CameraView: View {
                         if case .failed(let message) = camera.state {
                             Text(message)
                         } else {
-                            Text("Camera preview")
+                            Text(camera.usesFrontCamera ? "Front camera" : "Back camera")
                         }
                     }
                     .font(.ui(15))
@@ -86,6 +88,9 @@ struct CameraView: View {
             // Top row: timer while filming, frame rate on the right.
             VStack {
                 HStack(alignment: .top) {
+                    if model.cameraPhase == .idle {
+                        flipButton
+                    }
                     if case .filming(let since) = model.cameraPhase {
                         HStack(spacing: 8) {
                             StatusDot(color: Palette.red, size: 8, pulsing: true)
@@ -175,13 +180,36 @@ struct CameraView: View {
         }
     }
 
+    private var isMarking: Bool {
+        if case .mark = model.cameraPhase { return true }
+        return false
+    }
+
+    /// Switches between the back and front camera. Hidden while filming.
+    private var flipButton: some View {
+        Button {
+            Task { await model.camera.flip() }
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.ui(18, .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(.black.opacity(0.55)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressStyle())
+        .disabled(model.camera.state == .preparing)
+        .accessibilityLabel("Flip camera")
+        .accessibilityValue(model.camera.usesFrontCamera ? "Front camera" : "Back camera")
+    }
+
     /// Plain red circle with a white ring. The same button records and
     /// stops; it pulses while filming.
     private var recordCircle: some View {
         Circle()
             .fill(Palette.red)
             .overlay(Circle().strokeBorder(.white.opacity(0.85), lineWidth: 4))
-            .frame(width: 84, height: 84)
+            .frame(width: 67, height: 67)
             .contentShape(Circle())
     }
 }
