@@ -78,7 +78,7 @@ struct PodProtocolTests {
     }
 
     @Test func infoPacket() throws {
-        let info = try #require(InfoPacket(Data([2, 1, 100, 0, 10])))
+        let info = try #require(InfoPacket(Data([FSJProtocol.version, 1, 100, 0, 10])))
         #expect(info.version == FSJProtocol.version)
         #expect(info.side == .right)
         #expect(info.sampleRateHz == 100)
