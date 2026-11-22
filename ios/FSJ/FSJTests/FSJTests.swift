@@ -245,3 +245,30 @@ struct ClockSyncTests {
         #expect(AirtimeEstimator().synced(PodCapture(sampleRateHz: 100, samples: [.left: samples])) == nil)
     }
 }
+
+@MainActor
+struct CameraJumpStoreTests {
+    @Test func videoAirtimeIsStoredAlongside() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("fsj-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = JumpStore(fileURL: url)
+        store.add(JumpCode(family: .toeLoop, rotations: 2), airtime: 0.527, videoAirtime: 0.533)
+        store.add(JumpCode(family: .loop, rotations: 1), airtime: 0.41)
+
+        let reloaded = JumpStore(fileURL: url)
+        #expect(reloaded.jumps.first?.airtime == 0.527)
+        #expect(reloaded.jumps.first?.videoAirtime == 0.533)
+        #expect(reloaded.jumps.last?.videoAirtime == nil)
+    }
+
+    @Test func jumpsSavedBeforeVideoAirtimeStillLoad() throws {
+        let json = #"[{"id":"7E2F6A55-1C1B-4F0E-9A3F-2B1F4C0D9E11","code":{"family":"Lo","rotations":2},"airtime":0.5,"date":"2026-11-16T08:00:00Z"}]"#
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("fsj-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(json.utf8).write(to: url)
+        let store = JumpStore(fileURL: url)
+        #expect(store.jumps.count == 1)
+        #expect(store.jumps.first?.videoAirtime == nil)
+    }
+}

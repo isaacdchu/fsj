@@ -27,8 +27,8 @@ final class JumpStore {
 
     // MARK: Changes
 
-    func add(_ code: JumpCode, airtime: Double, date: Date = .now) {
-        jumps.append(SavedJump(code: code, airtime: airtime, date: date))
+    func add(_ code: JumpCode, airtime: Double, videoAirtime: Double? = nil, date: Date = .now) {
+        jumps.append(SavedJump(code: code, airtime: airtime, videoAirtime: videoAirtime, date: date))
         save()
     }
 

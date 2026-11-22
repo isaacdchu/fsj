@@ -63,14 +63,17 @@ nonisolated struct JumpCode: Hashable, Codable, Sendable, CustomStringConvertibl
 nonisolated struct SavedJump: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var code: JumpCode
-    /// Airtime in seconds, takeoff to landing.
+    /// Airtime in seconds, takeoff to landing. This is what Stats uses.
     var airtime: Double
+    /// Airtime marked on video, in seconds, for jumps saved from the Camera tab.
+    var videoAirtime: Double?
     var date: Date
 
-    init(id: UUID = UUID(), code: JumpCode, airtime: Double, date: Date) {
+    init(id: UUID = UUID(), code: JumpCode, airtime: Double, videoAirtime: Double? = nil, date: Date) {
         self.id = id
         self.code = code
         self.airtime = airtime
+        self.videoAirtime = videoAirtime
         self.date = date
     }
 }
