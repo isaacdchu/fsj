@@ -3,6 +3,9 @@
 //   glide -> takeoff spike -> free fall + spin (airtime) -> landing spike.
 // The true simulated airtime goes to USB serial so the phone's measurement
 // can be checked against it.
+// Sense builds use sample_source_lsm6ds3.cpp instead.
+
+#ifndef ARDUINO_Seeed_XIAO_nRF52840_Sense
 
 #include <Arduino.h>
 
@@ -96,3 +99,5 @@ void sampleSourceRead(ImuSample& s) {
         }
     }
 }
+
+#endif

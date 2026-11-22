@@ -11,7 +11,7 @@
 #include "sample_source.h"
 
 #ifndef SKATE_SIDE
-#define SKATE_SIDE SIDE_RIGHT
+#define SKATE_SIDE SIDE_LEFT
 #endif
 
 const char* const DEVICE_NAME = (SKATE_SIDE == SIDE_RIGHT) ? "FSJ-R" : "FSJ-L";

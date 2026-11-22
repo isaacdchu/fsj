@@ -2,7 +2,9 @@
 
 ## Flashing the MCU
 
-The firmware in `arduino/fsj/` runs on a Seeed XIAO nRF52840. It builds with the
+The firmware in `arduino/fsj/` runs on a Seeed XIAO nRF52840 Sense and reads
+its onboard LSM6DS3TR-C IMU. On the plain XIAO nRF52840 (no IMU) it builds
+with a simulated data source instead. It builds with the
 Seeeduino nRF52 core (`Seeeduino:nrf52`, v1.1.13). Install that core through the
 Arduino IDE Boards Manager first.
 
@@ -24,7 +26,8 @@ which can draw a blank window on recent macOS.
 python3 tools/flasher/flash_pods.py
 ```
 
-Set `FSJ_FQBN=Seeeduino:nrf52:xiaonRF52840Sense` to build for the Sense boards.
+It builds for the Sense board. Set `FSJ_FQBN=Seeeduino:nrf52:xiaonRF52840` to
+build for the plain board (simulated data).
 
 ### Arduino IDE setup
 
@@ -44,8 +47,7 @@ Set `FSJ_FQBN=Seeeduino:nrf52:xiaonRF52840Sense` to build for the Sense boards.
 
    Reinstalling or updating the core may delete this file.
 4. Open `arduino/fsj/fsj.ino`.
-5. Select Tools > Board > Seeed nRF52 Boards > Seeed XIAO nRF52840 (the Sense
-   variant once those boards arrive).
+5. Select Tools > Board > Seeed nRF52 Boards > Seeed XIAO nRF52840 Sense.
 6. Plug in the board and select it under Tools > Port.
 7. Click Upload. The serial monitor uses 115200 baud.
 
@@ -73,10 +75,10 @@ Compile for the left or right skate (`SKATE_SIDE` defaults to left):
 
 ```bash
 # left skate
-"$CLI" compile --fqbn Seeeduino:nrf52:xiaonRF52840 arduino/fsj
+"$CLI" compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense arduino/fsj
 
 # right skate
-"$CLI" compile --fqbn Seeeduino:nrf52:xiaonRF52840 --build-property "compiler.cpp.extra_flags=-DSKATE_SIDE=1" arduino/fsj
+"$CLI" compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense --build-property "compiler.cpp.extra_flags=-DSKATE_SIDE=1" arduino/fsj
 ```
 
 Plug in the board over USB, find its port, then upload. `upload` flashes the
@@ -86,7 +88,7 @@ most recent compile, so compile for the side you want right before uploading:
 "$CLI" board list
 
 # macOS port looks like /dev/cu.usbmodemXXXX, Windows looks like COMx
-"$CLI" upload --fqbn Seeeduino:nrf52:xiaonRF52840 -p <port> arduino/fsj
+"$CLI" upload --fqbn Seeeduino:nrf52:xiaonRF52840Sense -p <port> arduino/fsj
 ```
 
 Open the serial monitor (the sketch uses 115200 baud):
@@ -95,6 +97,6 @@ Open the serial monitor (the sketch uses 115200 baud):
 "$CLI" monitor -p <port> -c baudrate=115200
 ```
 
-When the XIAO nRF52840 Sense boards arrive, use the
-`Seeeduino:nrf52:xiaonRF52840Sense` FQBN in place of
-`Seeeduino:nrf52:xiaonRF52840`.
+For the plain XIAO nRF52840 (simulated data), use the
+`Seeeduino:nrf52:xiaonRF52840` FQBN in place of
+`Seeeduino:nrf52:xiaonRF52840Sense`.

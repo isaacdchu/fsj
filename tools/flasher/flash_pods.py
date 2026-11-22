@@ -15,7 +15,7 @@ variable, PATH, then the copy bundled with Arduino IDE 2.
     python3 tools/flasher/flash_pods.py
 
 Set FSJ_FQBN to build for another board, e.g.
-FSJ_FQBN=Seeeduino:nrf52:xiaonRF52840Sense for the Sense boards.
+FSJ_FQBN=Seeeduino:nrf52:xiaonRF52840 for the plain (no IMU) board.
 """
 
 import json
@@ -30,7 +30,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKETCH_DIR = REPO_ROOT / "arduino" / "fsj"
-FQBN = os.environ.get("FSJ_FQBN", "Seeeduino:nrf52:xiaonRF52840")
+FQBN = os.environ.get("FSJ_FQBN", "Seeeduino:nrf52:xiaonRF52840Sense")
 
 SIDES = {
     "left": {"value": 0, "name": "FSJ-L"},

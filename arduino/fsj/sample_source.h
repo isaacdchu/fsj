@@ -1,7 +1,7 @@
 #pragma once
-// Where IMU samples come from. The BLE code only uses these functions, so
-// the simulator (sample_source_sim.cpp) can be replaced by a real LSM6DS3
-// implementation on the XIAO nRF52840 Sense without touching fsj.ino.
+// Where IMU samples come from. The BLE code only uses these functions.
+// The build picks one implementation by board: sample_source_lsm6ds3.cpp on
+// the XIAO nRF52840 Sense, sample_source_sim.cpp (fake jumps) on the plain board.
 
 #include "protocol.h"
 
