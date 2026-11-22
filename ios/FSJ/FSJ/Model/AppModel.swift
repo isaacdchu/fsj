@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 enum AppTab: Hashable {
-    case record, stats, settings
+    case record, camera, stats, settings
 }
 
 enum RecordPhase: Equatable {
@@ -13,6 +13,17 @@ enum RecordPhase: Equatable {
     case receiving
     /// Airtime known; the skater tags the jump, then saves or discards it.
     case review(airtime: Double)
+}
+
+enum CameraPhase: Equatable {
+    case idle
+    /// Video recording and pods streaming.
+    case filming(since: Date)
+    /// Both stopped; finishing the video file and the pod data.
+    case receiving
+    /// Step through the clip and mark takeoff and landing. `pods` is the pod
+    /// data on the video's clock, if the pods could be synced.
+    case mark(clip: VideoClip, podAirtime: Double?, pods: SyncedPods?)
 }
 
 /// A short message in the hint area of the Record screen.
@@ -33,8 +44,15 @@ final class AppModel {
     /// Rotation choice on the tag screen. Kept between jumps.
     var tagRotations = 2
 
+    let camera = CameraRecorder()
+    var cameraPhase: CameraPhase = .idle
+    var cameraNotice: RecordNotice?
+    /// Set when saving a marked clip fails; shown on the mark screen.
+    var cameraSaveError: String?
+
     @ObservationIgnored private let estimator = AirtimeEstimator()
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
+    @ObservationIgnored private var cameraNoticeTask: Task<Void, Never>?
 
     init(store: JumpStore, pods: any PodService) {
         self.store = store
@@ -70,10 +88,18 @@ final class AppModel {
         return false
     }
 
+    var isFilming: Bool {
+        if case .filming = cameraPhase { return true }
+        return false
+    }
+
+    /// Pods are streaming, from either the Record or the Camera tab.
+    var podsStreaming: Bool { isStreaming || isFilming }
+
     var bothPodsConnected: Bool { pods.bothConnected }
 
     func start() {
-        guard phase == .idle, bothPodsConnected else { return }
+        guard phase == .idle, cameraPhase == .idle, bothPodsConnected else { return }
         clearNotice()
         phase = .recording(since: .now)
         Task {
@@ -114,6 +140,91 @@ final class AppModel {
 
     func discard() {
         phase = .idle
+    }
+
+    // MARK: Camera
+
+    /// Record starts the video and both pods together.
+    func cameraRecord() {
+        guard cameraPhase == .idle, phase == .idle, bothPodsConnected else { return }
+        clearCameraNotice()
+        cameraPhase = .filming(since: .now)
+        Task {
+            do {
+                try await camera.startRecording()
+            } catch {
+                cameraPhase = .idle
+                showCamera(.problem, error.localizedDescription)
+                return
+            }
+            do {
+                try await pods.startStreaming()
+            } catch {
+                if let clip = try? await camera.stopRecording() { camera.discard(clip) }
+                cameraPhase = .idle
+                showCamera(.problem, error.localizedDescription)
+            }
+        }
+    }
+
+    /// Stop ends the video and both pods.
+    func cameraStop() {
+        guard isFilming else { return }
+        cameraPhase = .receiving
+        Task {
+            let clip: VideoClip
+            do {
+                clip = try await camera.stopRecording()
+            } catch {
+                _ = try? await pods.stopStreaming()
+                cameraPhase = .idle
+                showCamera(.problem, error.localizedDescription)
+                return
+            }
+            let capture = try? await pods.stopStreaming()
+            let podAirtime = capture.flatMap { estimator.airtime($0) }
+            let synced = capture.flatMap { estimator.synced($0) }
+            cameraSaveError = nil
+            cameraPhase = .mark(clip: clip, podAirtime: podAirtime, pods: synced)
+        }
+    }
+
+    /// Save the clip to Photos. `airtime` is the marked takeoff-to-landing time in seconds.
+    func cameraSave(airtime: Double) {
+        guard case .mark(let clip, _, _) = cameraPhase else { return }
+        cameraSaveError = nil
+        Task {
+            do {
+                try await camera.saveToPhotos(clip)
+                cameraPhase = .idle
+                showCamera(.saved, "Video saved, airtime \(Format.ms(airtime)) ms")
+            } catch {
+                cameraSaveError = error.localizedDescription
+            }
+        }
+    }
+
+    func cameraDiscard() {
+        guard case .mark(let clip, _, _) = cameraPhase else { return }
+        camera.discard(clip)
+        cameraSaveError = nil
+        cameraPhase = .idle
+    }
+
+    private func showCamera(_ kind: RecordNotice.Kind, _ text: String) {
+        cameraNotice = RecordNotice(kind: kind, text: text)
+        cameraNoticeTask?.cancel()
+        let shown = cameraNotice
+        cameraNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(kind == .saved ? 2.6 : 4))
+            guard !Task.isCancelled, let self, self.cameraNotice == shown else { return }
+            self.cameraNotice = nil
+        }
+    }
+
+    private func clearCameraNotice() {
+        cameraNoticeTask?.cancel()
+        cameraNotice = nil
     }
 
     // MARK: Notices

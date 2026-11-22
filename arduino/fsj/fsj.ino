@@ -20,6 +20,7 @@ const uint8_t SERVICE_UUID[16] = FSJ_UUID(0x01);
 const uint8_t DATA_UUID[16] = FSJ_UUID(0x02);
 const uint8_t INFO_UUID[16] = FSJ_UUID(0x03);
 const uint8_t CONTROL_UUID[16] = FSJ_UUID(0x04);
+const uint8_t SYNC_UUID[16] = FSJ_UUID(0x05);
 
 constexpr uint32_t BATTERY_INTERVAL_MS = 30000;
 constexpr uint32_t STATS_INTERVAL_MS = 5000;
@@ -28,6 +29,7 @@ BLEService fsjService(SERVICE_UUID);
 BLECharacteristic dataChar(DATA_UUID);
 BLECharacteristic infoChar(INFO_UUID);
 BLECharacteristic controlChar(CONTROL_UUID);
+BLECharacteristic syncChar(SYNC_UUID);
 BLEDis bledis;
 BLEBas blebas;
 
@@ -96,6 +98,17 @@ void onControlWrite(uint16_t connHandle, BLECharacteristic* chr, uint8_t* data, 
     }
 }
 
+// Clock-sync ping: reply straight away with the time the ping arrived, so
+// the phone can map this board's micros() onto its own clock.
+void onSyncWrite(uint16_t connHandle, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
+    uint32_t now = micros();  // read first; everything after adds error
+    (void)connHandle;
+    (void)chr;
+    if (len < 1) return;
+    SyncReply reply = {data[0], now};
+    syncChar.notify(&reply, sizeof(reply));
+}
+
 void startAdvertising() {
     Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
     Bluefruit.Advertising.addTxPower();
@@ -146,6 +159,12 @@ void setupBle() {
     controlChar.setWriteCallback(onControlWrite);
     controlChar.begin();
     controlChar.write8(CMD_STOP);
+
+    syncChar.setProperties(CHR_PROPS_WRITE_WO_RESP | CHR_PROPS_NOTIFY);
+    syncChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+    syncChar.setMaxLen(sizeof(SyncReply));  // 1-byte pings in, 5-byte replies out
+    syncChar.setWriteCallback(onSyncWrite);
+    syncChar.begin();
 
     startAdvertising();
 }
