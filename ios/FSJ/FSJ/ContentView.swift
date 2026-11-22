@@ -1,12 +1,16 @@
 import SwiftUI
 
-/// Three tabs: Record, Stats, Settings.
+/// Four tabs: Record, Camera, Stats, Settings.
 struct ContentView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
-        TabView(selection: $model.tab) {
+        // While the Camera tab is filming or saving, tab taps are ignored.
+        let tab = Binding(
+            get: { model.tab },
+            set: { if !model.cameraBusy { model.tab = $0 } }
+        )
+        TabView(selection: tab) {
             Tab("Record", systemImage: "record.circle", value: AppTab.record) {
                 RecordView()
             }
