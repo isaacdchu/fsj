@@ -153,13 +153,7 @@ struct CameraView: View {
                     .background(RoundedRectangle(cornerRadius: 8).fill(.black.opacity(0.6)))
             }
             Button { model.cameraRecord() } label: {
-                Text("Record")
-                    .font(.ui(15, .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 84, height: 84)
-                    .background(Circle().fill(Palette.red))
-                    .overlay(Circle().strokeBorder(.white.opacity(0.85), lineWidth: 4))
-                    .contentShape(Circle())
+                recordCircle
             }
             .buttonStyle(PressStyle())
             .disabled(!ready)
@@ -167,13 +161,8 @@ struct CameraView: View {
             .accessibilityLabel("Record video and start pods")
         case .filming:
             Button { model.cameraStop() } label: {
-                Text("Stop")
-                    .font(.ui(15, .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 84, height: 84)
-                    .background(Circle().fill(Palette.red))
-                    .contentShape(Circle())
-                    .phaseAnimator([1.0, 0.6]) { content, opacity in
+                recordCircle
+                    .phaseAnimator([1.0, 0.25]) { content, opacity in
                         content.opacity(opacity)
                     } animation: { _ in
                         .easeInOut(duration: 0.8)
@@ -184,6 +173,16 @@ struct CameraView: View {
         default:
             EmptyView()
         }
+    }
+
+    /// Plain red circle with a white ring. The same button records and
+    /// stops; it pulses while filming.
+    private var recordCircle: some View {
+        Circle()
+            .fill(Palette.red)
+            .overlay(Circle().strokeBorder(.white.opacity(0.85), lineWidth: 4))
+            .frame(width: 84, height: 84)
+            .contentShape(Circle())
     }
 }
 
@@ -210,6 +209,15 @@ struct MarkJumpView: View {
     @State private var takeoff: Int?
     @State private var landing: Int?
     @State private var frames = FrameLoader()
+    @State private var family: JumpFamily?
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+
+    private var code: JumpCode? {
+        family.map { JumpCode(family: $0, rotations: model.cameraRotations) }
+    }
+
+    private var canSave: Bool { ready && code != nil }
 
     private var ready: Bool {
         guard let takeoff, let landing else { return false }
@@ -238,6 +246,8 @@ struct MarkJumpView: View {
                     stepper
                     markButtons
                     comparison
+                    rotationPicker
+                    jumpPicker
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
@@ -252,6 +262,8 @@ struct MarkJumpView: View {
         }
         .onChange(of: frame) { _, f in frames.show(frame: f) }
         .sensoryFeedback(.selection, trigger: frame)
+        .sensoryFeedback(.selection, trigger: family)
+        .sensoryFeedback(.selection, trigger: model.cameraRotations)
     }
 
     // MARK: Viewer
@@ -572,6 +584,41 @@ struct MarkJumpView: View {
         .accessibilityElement(children: .combine)
     }
 
+    // MARK: Tag the jump
+
+    private var rotationPicker: some View {
+        let isWaltz = family == .waltz
+        let selected = isWaltz ? 1 : model.cameraRotations
+        return VStack(spacing: 10) {
+            SectionLabel("Rotations")
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(Array(JumpCode.rotationRange), id: \.self) { n in
+                    let locked = isWaltz && n != 1
+                    ChoiceButton(title: "\(n)", selected: selected == n) {
+                        model.cameraRotations = n
+                    }
+                    .disabled(locked)
+                    .opacity(locked ? 0.3 : 1)
+                    .accessibilityLabel("\(n) rotation\(n == 1 ? "" : "s")")
+                }
+            }
+        }
+    }
+
+    private var jumpPicker: some View {
+        VStack(spacing: 10) {
+            SectionLabel("Jump")
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(JumpFamily.allCases) { f in
+                    ChoiceButton(title: f.code, selected: family == f, height: 56) {
+                        family = f
+                    }
+                    .accessibilityLabel(f.name)
+                }
+            }
+        }
+    }
+
     private var actionBar: some View {
         GeometryReader { geo in
             let unit = (geo.size.width - 10) / 3
@@ -587,7 +634,7 @@ struct MarkJumpView: View {
                 .buttonStyle(PressStyle())
 
                 Button {
-                    if let videoAirtime { model.cameraSave(airtime: videoAirtime) }
+                    if let videoAirtime, let code { model.cameraSave(code, videoAirtime: videoAirtime) }
                 } label: {
                     Text("Save video")
                         .font(.ui(17, .semibold))
@@ -596,8 +643,9 @@ struct MarkJumpView: View {
                         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.ink))
                 }
                 .buttonStyle(PressStyle())
-                .disabled(!ready)
-                .opacity(ready ? 1 : 0.35)
+                .disabled(!canSave)
+                .opacity(canSave ? 1 : 0.35)
+                .accessibilityHint(code.map { "Saves the video and the jump as \($0.spokenName)" } ?? "Mark the jump and pick it first")
             }
         }
         .frame(height: 54)
