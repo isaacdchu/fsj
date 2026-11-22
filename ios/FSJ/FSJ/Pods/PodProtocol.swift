@@ -5,12 +5,13 @@ import Foundation
 // All multi-byte fields are little-endian.
 
 nonisolated enum FSJProtocol {
-    static let version: UInt8 = 2
+    static let version: UInt8 = 3
 
     static let serviceUUID = "3c820001-3646-49c3-9e01-da24fa4a5faa"
     static let dataUUID = "3c820002-3646-49c3-9e01-da24fa4a5faa"
     static let infoUUID = "3c820003-3646-49c3-9e01-da24fa4a5faa"
     static let controlUUID = "3c820004-3646-49c3-9e01-da24fa4a5faa"
+    static let syncUUID = "3c820005-3646-49c3-9e01-da24fa4a5faa"
 
     static let sampleRateHz: Double = 100
     static let samplesPerPacket = 10
@@ -80,6 +81,34 @@ nonisolated struct DataPacket: Sendable, Equatable {
                 LE.put(&out, UInt16(bitPattern: v))
             }
         }
+        return Data(out)
+    }
+}
+
+/// The pod's answer to a one-byte ping written to the sync characteristic:
+/// the ping's id and the pod's micros() when the ping arrived.
+nonisolated struct SyncReply: Sendable, Equatable {
+    static let byteCount = 5
+
+    var id: UInt8
+    var tMicros: UInt32
+
+    init(id: UInt8, tMicros: UInt32) {
+        self.id = id
+        self.tMicros = tMicros
+    }
+
+    init?(_ data: Data) {
+        guard data.count == Self.byteCount else { return nil }
+        let b = [UInt8](data)
+        id = b[0]
+        tMicros = LE.u32(b, 1)
+    }
+
+    /// Bytes as the firmware sends them (used by tests).
+    var encoded: Data {
+        var out = [id]
+        LE.put(&out, tMicros)
         return Data(out)
     }
 }

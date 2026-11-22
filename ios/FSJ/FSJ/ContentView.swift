@@ -10,6 +10,9 @@ struct ContentView: View {
             Tab("Record", systemImage: "record.circle", value: AppTab.record) {
                 RecordView()
             }
+            Tab("Camera", systemImage: "video", value: AppTab.camera) {
+                CameraView()
+            }
             Tab("Stats", systemImage: "chart.bar", value: AppTab.stats) {
                 StatsView()
             }
