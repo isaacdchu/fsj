@@ -49,6 +49,8 @@ final class AppModel {
     var cameraNotice: RecordNotice?
     /// Set when saving a marked clip fails; shown on the mark screen.
     var cameraSaveError: String?
+    /// Rotation choice on the mark screen. Kept between jumps.
+    var cameraRotations = 2
 
     @ObservationIgnored private let estimator = AirtimeEstimator()
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
@@ -189,15 +191,19 @@ final class AppModel {
         }
     }
 
-    /// Save the clip to Photos. `airtime` is the marked takeoff-to-landing time in seconds.
-    func cameraSave(airtime: Double) {
-        guard case .mark(let clip, _, _) = cameraPhase else { return }
+    /// Save the clip to Photos and the jump to Stats. Stats uses the pods'
+    /// airtime (the video airtime if the pods found no jump); the video
+    /// airtime is stored alongside. `videoAirtime` is the marked
+    /// takeoff-to-landing time in seconds.
+    func cameraSave(_ code: JumpCode, videoAirtime: Double) {
+        guard case .mark(let clip, let podAirtime, _) = cameraPhase else { return }
         cameraSaveError = nil
         Task {
             do {
                 try await camera.saveToPhotos(clip)
+                store.add(code, airtime: podAirtime ?? videoAirtime, videoAirtime: videoAirtime)
                 cameraPhase = .idle
-                showCamera(.saved, "Video saved, airtime \(Format.ms(airtime)) ms")
+                showCamera(.saved, "Saved \(code), video \(Format.ms(videoAirtime)) ms")
             } catch {
                 cameraSaveError = error.localizedDescription
             }
